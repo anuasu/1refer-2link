@@ -116,10 +116,11 @@ def register_user(user_id, first_name="", username="", referred_by=None):
             referred_by = None
 
         if referred_by is not None:
-            referrer = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ?",
-                (referred_by,)
-            ).fetchone()
+            referrer = conn.execute("""
+                SELECT user_id
+                FROM users
+                WHERE user_id = ?
+            """, (referred_by,)).fetchone()
 
             if not referrer:
                 referred_by = None
@@ -188,10 +189,11 @@ def user_exists(user_id):
 
 def is_user_verified(user_id):
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT is_verified FROM users WHERE user_id = ?",
-            (user_id,)
-        ).fetchone()
+        row = conn.execute("""
+            SELECT is_verified
+            FROM users
+            WHERE user_id = ?
+        """, (user_id,)).fetchone()
 
         return bool(row["is_verified"]) if row else False
 
@@ -245,33 +247,36 @@ def add_coins(user_id, amount, transaction_type, description=""):
 
 
 def reward_pending_referrals(conn, referrer_id, now):
-    if not conn.execute("""
-        SELECT 1
+    referrer = conn.execute("""
+        SELECT user_id, first_name, username
         FROM users
-        WHERE user_id = ? AND is_verified = 1
-    """, (referrer_id,)).fetchone():
-        return 0
+        WHERE user_id = ?
+          AND is_verified = 1
+    """, (referrer_id,)).fetchone()
+
+    if not referrer:
+        return []
 
     pending = conn.execute("""
-        SELECT referred_user_id
-        FROM referrals
-        WHERE referrer_id = ?
-          AND rewarded = 0
-        ORDER BY created_at
+        SELECT
+            r.referred_user_id,
+            u.first_name,
+            u.username
+        FROM referrals r
+        JOIN users u
+          ON u.user_id = r.referred_user_id
+        WHERE r.referrer_id = ?
+          AND r.rewarded = 0
+          AND u.is_verified = 1
+        ORDER BY r.created_at
     """, (referrer_id,)).fetchall()
 
-    rewarded_count = 0
+    newly_rewarded = []
 
     for referral in pending:
         referred_user_id = referral["referred_user_id"]
 
-        verified_user = conn.execute("""
-            SELECT 1
-            FROM users
-            WHERE user_id = ? AND is_verified = 1
-        """, (referred_user_id,)).fetchone()
-
-        if not verified_user or referred_user_id == referrer_id:
+        if referred_user_id == referrer_id:
             continue
 
         updated = conn.execute("""
@@ -317,9 +322,24 @@ def reward_pending_referrals(conn, referrer_id, now):
             now
         ))
 
-        rewarded_count += 1
+        balance_row = conn.execute("""
+            SELECT coins_balance
+            FROM users
+            WHERE user_id = ?
+        """, (referrer_id,)).fetchone()
 
-    return rewarded_count
+        newly_rewarded.append({
+            "referrer_id": referrer_id,
+            "referrer_name": referrer["first_name"] or "User",
+            "referrer_username": referrer["username"] or "",
+            "referrer_balance": balance_row["coins_balance"],
+            "referred_user_id": referred_user_id,
+            "referred_user_name": referral["first_name"] or "User",
+            "referred_user_username": referral["username"] or "",
+            "reward": REFERRAL_REWARD
+        })
+
+    return newly_rewarded
 
 
 def complete_verification(user_id):
@@ -328,8 +348,11 @@ def complete_verification(user_id):
     result = {
         "success": False,
         "welcome_bonus": 0,
-        "referral_reward": 0,
-        "referrer_id": None
+        "referrer_id": None,
+        "referrer_name": None,
+        "referrer_username": None,
+        "newly_rewarded_referrals": [],
+        "coins_balance": 0
     }
 
     with get_connection() as conn:
@@ -353,22 +376,23 @@ def complete_verification(user_id):
                 user_id
             ))
 
-            if not user["welcome_bonus_claimed"]:
-                conn.execute("""
-                    UPDATE users
-                    SET coins_balance = coins_balance + ?,
-                        total_coins_earned = total_coins_earned + ?,
-                        welcome_bonus_claimed = 1,
-                        updated_at = ?
-                    WHERE user_id = ?
-                      AND welcome_bonus_claimed = 0
-                """, (
-                    WELCOME_BONUS,
-                    WELCOME_BONUS,
-                    now,
-                    user_id
-                ))
+        if not user["welcome_bonus_claimed"]:
+            updated = conn.execute("""
+                UPDATE users
+                SET coins_balance = coins_balance + ?,
+                    total_coins_earned = total_coins_earned + ?,
+                    welcome_bonus_claimed = 1,
+                    updated_at = ?
+                WHERE user_id = ?
+                  AND welcome_bonus_claimed = 0
+            """, (
+                WELCOME_BONUS,
+                WELCOME_BONUS,
+                now,
+                user_id
+            ))
 
+            if updated.rowcount == 1:
                 conn.execute("""
                     INSERT INTO coin_transactions (
                         user_id,
@@ -387,30 +411,46 @@ def complete_verification(user_id):
                 result["welcome_bonus"] = WELCOME_BONUS
 
         referral = conn.execute("""
-            SELECT referrer_id, rewarded
-            FROM referrals
-            WHERE referred_user_id = ?
+            SELECT
+                r.referrer_id,
+                r.rewarded,
+                u.first_name,
+                u.username
+            FROM referrals r
+            JOIN users u
+              ON u.user_id = r.referrer_id
+            WHERE r.referred_user_id = ?
         """, (user_id,)).fetchone()
 
-        if referral and not referral["rewarded"]:
-            referrer_id = referral["referrer_id"]
+        if referral:
+            result["referrer_id"] = referral["referrer_id"]
+            result["referrer_name"] = referral["first_name"] or "User"
+            result["referrer_username"] = referral["username"] or ""
 
-            rewarded = reward_pending_referrals(
+            if not referral["rewarded"]:
+                result["newly_rewarded_referrals"].extend(
+                    reward_pending_referrals(
+                        conn,
+                        referral["referrer_id"],
+                        now
+                    )
+                )
+
+        result["newly_rewarded_referrals"].extend(
+            reward_pending_referrals(
                 conn,
-                referrer_id,
+                user_id,
                 now
             )
-
-            if rewarded:
-                result["referral_reward"] = REFERRAL_REWARD
-                result["referrer_id"] = referrer_id
-
-        reward_pending_referrals(
-            conn,
-            user_id,
-            now
         )
 
+        balance = conn.execute("""
+            SELECT coins_balance
+            FROM users
+            WHERE user_id = ?
+        """, (user_id,)).fetchone()
+
+        result["coins_balance"] = balance["coins_balance"]
         result["success"] = True
 
     return result
@@ -452,26 +492,32 @@ def get_user_stats(user_id):
 
 def get_all_user_ids():
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT user_id FROM users ORDER BY user_id"
-        ).fetchall()
+        rows = conn.execute("""
+            SELECT user_id
+            FROM users
+            ORDER BY user_id
+        """).fetchall()
 
         return [row["user_id"] for row in rows]
 
 
 def get_global_stats():
     with get_connection() as conn:
-        total_users = conn.execute(
-            "SELECT COUNT(*) AS total FROM users"
-        ).fetchone()["total"]
+        total_users = conn.execute("""
+            SELECT COUNT(*) AS total
+            FROM users
+        """).fetchone()["total"]
 
-        total_referrals = conn.execute(
-            "SELECT COUNT(*) AS total FROM referrals WHERE rewarded = 1"
-        ).fetchone()["total"]
+        total_referrals = conn.execute("""
+            SELECT COUNT(*) AS total
+            FROM referrals
+            WHERE rewarded = 1
+        """).fetchone()["total"]
 
-        total_coins_spent = conn.execute(
-            "SELECT COALESCE(SUM(total_coins_spent), 0) AS total FROM users"
-        ).fetchone()["total"]
+        total_coins_spent = conn.execute("""
+            SELECT COALESCE(SUM(total_coins_spent), 0) AS total
+            FROM users
+        """).fetchone()["total"]
 
         return {
             "total_users": total_users,
@@ -527,7 +573,8 @@ def get_link(link_id):
         row = conn.execute("""
             SELECT *
             FROM links
-            WHERE id = ? AND is_active = 1
+            WHERE id = ?
+              AND is_active = 1
         """, (link_id,)).fetchone()
 
         return dict(row) if row else None
@@ -547,7 +594,8 @@ def delete_link(link_id):
         cursor = conn.execute("""
             UPDATE links
             SET is_active = 0
-            WHERE id = ? AND is_active = 1
+            WHERE id = ?
+              AND is_active = 1
         """, (link_id,))
 
         return cursor.rowcount > 0
@@ -558,7 +606,8 @@ def has_unlocked_link(user_id, link_id):
         row = conn.execute("""
             SELECT 1
             FROM unlocked_links
-            WHERE user_id = ? AND link_id = ?
+            WHERE user_id = ?
+              AND link_id = ?
         """, (
             user_id,
             link_id
@@ -574,7 +623,8 @@ def unlock_link(user_id, link_id):
         user = conn.execute("""
             SELECT coins_balance
             FROM users
-            WHERE user_id = ? AND is_verified = 1
+            WHERE user_id = ?
+              AND is_verified = 1
         """, (user_id,)).fetchone()
 
         if not user:
@@ -586,7 +636,8 @@ def unlock_link(user_id, link_id):
         link = conn.execute("""
             SELECT id, url
             FROM links
-            WHERE id = ? AND is_active = 1
+            WHERE id = ?
+              AND is_active = 1
         """, (link_id,)).fetchone()
 
         if not link:
@@ -598,7 +649,8 @@ def unlock_link(user_id, link_id):
         already_unlocked = conn.execute("""
             SELECT 1
             FROM unlocked_links
-            WHERE user_id = ? AND link_id = ?
+            WHERE user_id = ?
+              AND link_id = ?
         """, (
             user_id,
             link_id
@@ -681,7 +733,8 @@ def get_user_unlocked_links(user_id):
                 links.url,
                 unlocked_links.unlocked_at
             FROM unlocked_links
-            JOIN links ON links.id = unlocked_links.link_id
+            JOIN links
+              ON links.id = unlocked_links.link_id
             WHERE unlocked_links.user_id = ?
             ORDER BY unlocked_links.unlocked_at DESC
         """, (user_id,)).fetchall()
