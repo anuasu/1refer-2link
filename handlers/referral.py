@@ -1,47 +1,24 @@
+from urllib.parse import quote
+
 from telebot import types
 
 from bot import bot
 
-from database import (
-    get_user,
-    get_user_stats,
-    complete_verification
-)
-
 from config import (
-    GROUP_ID,
     GROUP_INVITE_LINK,
-    CHANNEL_ID,
     CHANNEL_INVITE_LINK,
     REFERRAL_REWARD
 )
 
+from database import (
+    get_user,
+    get_user_stats
+)
 
-def check_membership(user_id):
-    try:
-        group_member = bot.get_chat_member(
-            GROUP_ID,
-            user_id
-        )
-
-        channel_member = bot.get_chat_member(
-            CHANNEL_ID,
-            user_id
-        )
-
-        valid_statuses = [
-            "member",
-            "administrator",
-            "creator"
-        ]
-
-        return (
-            group_member.status in valid_statuses
-            and channel_member.status in valid_statuses
-        )
-
-    except Exception:
-        return False
+from handlers.start import (
+    check_membership,
+    finish_verification
+)
 
 
 def referral_join_keyboard():
@@ -86,13 +63,22 @@ def show_referral_info(message):
     if not check_membership(user_id):
         bot.send_message(
             message.chat.id,
-            "🔐 Referral system use karne ke liye "
-            "group aur channel dono join karo.",
-            reply_markup=referral_join_keyboard()
+            "🔐 <b>Verification Required</b>\n\n"
+            "Refer & Earn use karne ke liye private group "
+            "aur private channel dono join karo.\n\n"
+            "Join karne ke baad Check Join dabao.",
+            reply_markup=referral_join_keyboard(),
+            parse_mode="HTML"
         )
         return
 
-    complete_verification(user_id)
+    if not user.get("is_verified"):
+        finish_verification(
+            message.chat.id,
+            user_id,
+            message.from_user.first_name or "User"
+        )
+        return
 
     stats = get_user_stats(user_id)
 
@@ -102,11 +88,20 @@ def show_referral_info(message):
         f"https://t.me/{bot_username}?start={user_id}"
     )
 
+    share_url = (
+        "https://t.me/share/url"
+        f"?url={quote(referral_link, safe='')}"
+        f"&text={quote('Join this bot using my referral link!')}"
+    )
+
     text = (
         "👥 <b>REFER &amp; EARN</b>\n\n"
         "Apna referral link friends ke saath share karo!\n\n"
         f"🎁 Har successful referral par "
         f"<b>+{REFERRAL_REWARD} Coins</b> milenge.\n\n"
+        "📌 Referral tabhi successful hoga jab naya user "
+        "group aur channel dono join karke verification "
+        "complete karega.\n\n"
         "🔗 <b>Your Referral Link:</b>\n"
         f"<code>{referral_link}</code>\n\n"
         f"👤 Successful Referrals: "
@@ -122,10 +117,7 @@ def show_referral_info(message):
     keyboard.row(
         types.InlineKeyboardButton(
             "📤 Share Referral Link",
-            url=(
-                "https://t.me/share/url"
-                f"?url={referral_link}"
-            )
+            url=share_url
         )
     )
 
@@ -133,7 +125,8 @@ def show_referral_info(message):
         message.chat.id,
         text,
         reply_markup=keyboard,
-        parse_mode="HTML"
+        parse_mode="HTML",
+        disable_web_page_preview=True
     )
 
 
