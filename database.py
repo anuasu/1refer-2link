@@ -1,12 +1,22 @@
 import sqlite3
 from datetime import datetime
-from config import DATABASE_FILE, WELCOME_BONUS, REFERRAL_REWARD, LINK_UNLOCK_COST
+
+from config import (
+    DATABASE_FILE,
+    WELCOME_BONUS,
+    REFERRAL_REWARD,
+    LINK_UNLOCK_COST
+)
 
 
 def get_connection():
-    connection = sqlite3.connect(DATABASE_FILE, timeout=30)
+    connection = sqlite3.connect(
+        DATABASE_FILE,
+        timeout=30
+    )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 30000")
     return connection
 
 
@@ -72,6 +82,9 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_transactions_user
             ON coin_transactions(user_id);
+
+            CREATE INDEX IF NOT EXISTS idx_referrals_referrer
+            ON referrals(referrer_id);
         """)
 
 
@@ -87,10 +100,16 @@ def register_user(user_id, first_name="", username="", referred_by=None):
         if existing:
             conn.execute("""
                 UPDATE users
-                SET first_name = ?, username = ?, updated_at = ?
+                SET first_name = ?,
+                    username = ?,
+                    updated_at = ?
                 WHERE user_id = ?
-            """, (first_name or "", username or "", now, user_id))
-
+            """, (
+                first_name or "",
+                username or "",
+                now,
+                user_id
+            ))
             return False
 
         if referred_by == user_id:
@@ -107,10 +126,17 @@ def register_user(user_id, first_name="", username="", referred_by=None):
 
         conn.execute("""
             INSERT INTO users (
-                user_id, first_name, username, referred_by,
-                is_verified, welcome_bonus_claimed, coins_balance,
-                total_coins_earned, total_coins_spent,
-                created_at, updated_at
+                user_id,
+                first_name,
+                username,
+                referred_by,
+                is_verified,
+                welcome_bonus_claimed,
+                coins_balance,
+                total_coins_earned,
+                total_coins_spent,
+                created_at,
+                updated_at
             )
             VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, ?, ?)
         """, (
@@ -125,10 +151,17 @@ def register_user(user_id, first_name="", username="", referred_by=None):
         if referred_by is not None:
             conn.execute("""
                 INSERT OR IGNORE INTO referrals (
-                    referred_user_id, referrer_id, rewarded, created_at
+                    referred_user_id,
+                    referrer_id,
+                    rewarded,
+                    created_at
                 )
                 VALUES (?, ?, 0, ?)
-            """, (user_id, referred_by, now))
+            """, (
+                user_id,
+                referred_by,
+                now
+            ))
 
         return True
 
@@ -164,7 +197,7 @@ def is_user_verified(user_id):
 
 
 def add_coins(user_id, amount, transaction_type, description=""):
-    if amount <= 0:
+    if not isinstance(amount, int) or amount <= 0:
         return False
 
     now = current_time()
@@ -184,20 +217,114 @@ def add_coins(user_id, amount, transaction_type, description=""):
                 total_coins_earned = total_coins_earned + ?,
                 updated_at = ?
             WHERE user_id = ?
-        """, (amount, amount, now, user_id))
+        """, (
+            amount,
+            amount,
+            now,
+            user_id
+        ))
 
         conn.execute("""
             INSERT INTO coin_transactions (
-                user_id, amount, transaction_type, description, created_at
+                user_id,
+                amount,
+                transaction_type,
+                description,
+                created_at
             )
             VALUES (?, ?, ?, ?, ?)
-        """, (user_id, amount, transaction_type, description, now))
+        """, (
+            user_id,
+            amount,
+            transaction_type,
+            description,
+            now
+        ))
 
         return True
 
 
+def reward_pending_referrals(conn, referrer_id, now):
+    if not conn.execute("""
+        SELECT 1
+        FROM users
+        WHERE user_id = ? AND is_verified = 1
+    """, (referrer_id,)).fetchone():
+        return 0
+
+    pending = conn.execute("""
+        SELECT referred_user_id
+        FROM referrals
+        WHERE referrer_id = ?
+          AND rewarded = 0
+        ORDER BY created_at
+    """, (referrer_id,)).fetchall()
+
+    rewarded_count = 0
+
+    for referral in pending:
+        referred_user_id = referral["referred_user_id"]
+
+        verified_user = conn.execute("""
+            SELECT 1
+            FROM users
+            WHERE user_id = ? AND is_verified = 1
+        """, (referred_user_id,)).fetchone()
+
+        if not verified_user or referred_user_id == referrer_id:
+            continue
+
+        updated = conn.execute("""
+            UPDATE referrals
+            SET rewarded = 1
+            WHERE referred_user_id = ?
+              AND referrer_id = ?
+              AND rewarded = 0
+        """, (
+            referred_user_id,
+            referrer_id
+        ))
+
+        if updated.rowcount != 1:
+            continue
+
+        conn.execute("""
+            UPDATE users
+            SET coins_balance = coins_balance + ?,
+                total_coins_earned = total_coins_earned + ?,
+                updated_at = ?
+            WHERE user_id = ?
+        """, (
+            REFERRAL_REWARD,
+            REFERRAL_REWARD,
+            now,
+            referrer_id
+        ))
+
+        conn.execute("""
+            INSERT INTO coin_transactions (
+                user_id,
+                amount,
+                transaction_type,
+                description,
+                created_at
+            )
+            VALUES (?, ?, 'referral_reward', ?, ?)
+        """, (
+            referrer_id,
+            REFERRAL_REWARD,
+            f"Successful referral: {referred_user_id}",
+            now
+        ))
+
+        rewarded_count += 1
+
+    return rewarded_count
+
+
 def complete_verification(user_id):
     now = current_time()
+
     result = {
         "success": False,
         "welcome_bonus": 0,
@@ -206,42 +333,58 @@ def complete_verification(user_id):
     }
 
     with get_connection() as conn:
-        user = conn.execute(
-            "SELECT * FROM users WHERE user_id = ?",
-            (user_id,)
-        ).fetchone()
+        user = conn.execute("""
+            SELECT *
+            FROM users
+            WHERE user_id = ?
+        """, (user_id,)).fetchone()
 
         if not user:
             return result
 
-        if user["is_verified"]:
-            result["success"] = True
-            return result
-
-        conn.execute("""
-            UPDATE users
-            SET is_verified = 1, updated_at = ?
-            WHERE user_id = ?
-        """, (now, user_id))
-
-        if not user["welcome_bonus_claimed"]:
+        if not user["is_verified"]:
             conn.execute("""
                 UPDATE users
-                SET coins_balance = coins_balance + ?,
-                    total_coins_earned = total_coins_earned + ?,
-                    welcome_bonus_claimed = 1,
+                SET is_verified = 1,
                     updated_at = ?
                 WHERE user_id = ?
-            """, (WELCOME_BONUS, WELCOME_BONUS, now, user_id))
+            """, (
+                now,
+                user_id
+            ))
 
-            conn.execute("""
-                INSERT INTO coin_transactions (
-                    user_id, amount, transaction_type, description, created_at
-                )
-                VALUES (?, ?, 'welcome_bonus', 'Welcome bonus', ?)
-            """, (user_id, WELCOME_BONUS, now))
+            if not user["welcome_bonus_claimed"]:
+                conn.execute("""
+                    UPDATE users
+                    SET coins_balance = coins_balance + ?,
+                        total_coins_earned = total_coins_earned + ?,
+                        welcome_bonus_claimed = 1,
+                        updated_at = ?
+                    WHERE user_id = ?
+                      AND welcome_bonus_claimed = 0
+                """, (
+                    WELCOME_BONUS,
+                    WELCOME_BONUS,
+                    now,
+                    user_id
+                ))
 
-            result["welcome_bonus"] = WELCOME_BONUS
+                conn.execute("""
+                    INSERT INTO coin_transactions (
+                        user_id,
+                        amount,
+                        transaction_type,
+                        description,
+                        created_at
+                    )
+                    VALUES (?, ?, 'welcome_bonus', 'Welcome bonus', ?)
+                """, (
+                    user_id,
+                    WELCOME_BONUS,
+                    now
+                ))
+
+                result["welcome_bonus"] = WELCOME_BONUS
 
         referral = conn.execute("""
             SELECT referrer_id, rewarded
@@ -252,51 +395,25 @@ def complete_verification(user_id):
         if referral and not referral["rewarded"]:
             referrer_id = referral["referrer_id"]
 
-            if referrer_id != user_id:
-                referrer = conn.execute("""
-                    SELECT user_id, is_verified
-                    FROM users
-                    WHERE user_id = ?
-                """, (referrer_id,)).fetchone()
+            rewarded = reward_pending_referrals(
+                conn,
+                referrer_id,
+                now
+            )
 
-                if referrer and referrer["is_verified"]:
-                    conn.execute("""
-                        UPDATE users
-                        SET coins_balance = coins_balance + ?,
-                            total_coins_earned = total_coins_earned + ?,
-                            updated_at = ?
-                        WHERE user_id = ?
-                    """, (
-                        REFERRAL_REWARD,
-                        REFERRAL_REWARD,
-                        now,
-                        referrer_id
-                    ))
+            if rewarded:
+                result["referral_reward"] = REFERRAL_REWARD
+                result["referrer_id"] = referrer_id
 
-                    conn.execute("""
-                        INSERT INTO coin_transactions (
-                            user_id, amount, transaction_type,
-                            description, created_at
-                        )
-                        VALUES (?, ?, 'referral_reward', ?, ?)
-                    """, (
-                        referrer_id,
-                        REFERRAL_REWARD,
-                        f"Successful referral: {user_id}",
-                        now
-                    ))
-
-                    conn.execute("""
-                        UPDATE referrals
-                        SET rewarded = 1
-                        WHERE referred_user_id = ?
-                    """, (user_id,))
-
-                    result["referral_reward"] = REFERRAL_REWARD
-                    result["referrer_id"] = referrer_id
+        reward_pending_referrals(
+            conn,
+            user_id,
+            now
+        )
 
         result["success"] = True
-        return result
+
+    return result
 
 
 def get_user_stats(user_id):
@@ -321,7 +438,8 @@ def get_user_stats(user_id):
         referral_count = conn.execute("""
             SELECT COUNT(*) AS total
             FROM referrals
-            WHERE referrer_id = ? AND rewarded = 1
+            WHERE referrer_id = ?
+              AND rewarded = 1
         """, (user_id,)).fetchone()["total"]
 
         return {
@@ -374,9 +492,18 @@ def add_links(urls, admin_id):
                 continue
 
             cursor = conn.execute("""
-                INSERT INTO links (url, added_by, is_active, created_at)
+                INSERT INTO links (
+                    url,
+                    added_by,
+                    is_active,
+                    created_at
+                )
                 VALUES (?, ?, 1, ?)
-            """, (url, admin_id, now))
+            """, (
+                url,
+                admin_id,
+                now
+            ))
 
             added_ids.append(cursor.lastrowid)
 
@@ -432,7 +559,10 @@ def has_unlocked_link(user_id, link_id):
             SELECT 1
             FROM unlocked_links
             WHERE user_id = ? AND link_id = ?
-        """, (user_id, link_id)).fetchone()
+        """, (
+            user_id,
+            link_id
+        )).fetchone()
 
         return row is not None
 
@@ -469,7 +599,10 @@ def unlock_link(user_id, link_id):
             SELECT 1
             FROM unlocked_links
             WHERE user_id = ? AND link_id = ?
-        """, (user_id, link_id)).fetchone()
+        """, (
+            user_id,
+            link_id
+        )).fetchone()
 
         if already_unlocked:
             return {
@@ -479,29 +612,48 @@ def unlock_link(user_id, link_id):
                 "balance": user["coins_balance"]
             }
 
-        if user["coins_balance"] < LINK_UNLOCK_COST:
-            return {
-                "success": False,
-                "reason": "insufficient_coins",
-                "balance": user["coins_balance"]
-            }
-
-        conn.execute("""
+        updated = conn.execute("""
             UPDATE users
             SET coins_balance = coins_balance - ?,
                 total_coins_spent = total_coins_spent + ?,
                 updated_at = ?
             WHERE user_id = ?
-        """, (LINK_UNLOCK_COST, LINK_UNLOCK_COST, now, user_id))
+              AND is_verified = 1
+              AND coins_balance >= ?
+        """, (
+            LINK_UNLOCK_COST,
+            LINK_UNLOCK_COST,
+            now,
+            user_id,
+            LINK_UNLOCK_COST
+        ))
+
+        if updated.rowcount != 1:
+            return {
+                "success": False,
+                "reason": "insufficient_coins"
+            }
 
         conn.execute("""
-            INSERT INTO unlocked_links (user_id, link_id, unlocked_at)
+            INSERT INTO unlocked_links (
+                user_id,
+                link_id,
+                unlocked_at
+            )
             VALUES (?, ?, ?)
-        """, (user_id, link_id, now))
+        """, (
+            user_id,
+            link_id,
+            now
+        ))
 
         conn.execute("""
             INSERT INTO coin_transactions (
-                user_id, amount, transaction_type, description, created_at
+                user_id,
+                amount,
+                transaction_type,
+                description,
+                created_at
             )
             VALUES (?, ?, 'link_unlock', ?, ?)
         """, (
