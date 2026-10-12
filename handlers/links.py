@@ -191,7 +191,7 @@ def back_to_links_callback(call):
         return
 
     if not check_membership(user_id):
-        bot.answer_callback_query(call.id, "Pehle group aur channel join karo!", show_alert=True)
+        bot.answer_callback_query(call.id, "Pehle group aur channel dono join karo!", show_alert=True)
         return
 
     bot.answer_callback_query(call.id)
