@@ -8,6 +8,8 @@ import handlers.admin
 import handlers.broadcast
 import handlers.backup
 
+import handlers.redeem
+
 
 if __name__ == "__main__":
     print("👣 Bot is starting...")
