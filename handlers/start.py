@@ -1,3 +1,5 @@
+from html import escape
+
 from telebot import types
 
 from bot import bot
@@ -8,14 +10,14 @@ from config import (
     CHANNEL_ID,
     CHANNEL_INVITE_LINK,
     WELCOME_BONUS,
-    REFERRAL_REWARD
+    REFERRAL_REWARD,
 )
 
 from database import (
     register_user,
     get_user,
     get_user_stats,
-    complete_verification
+    complete_verification,
 )
 
 
@@ -38,7 +40,7 @@ def check_membership(user_id):
         allowed_statuses = (
             "member",
             "administrator",
-            "creator"
+            "creator",
         )
 
         return (
@@ -88,6 +90,11 @@ def main_menu():
         resize_keyboard=True
     )
 
+    # Profile sabse upar
+    keyboard.row(
+        types.KeyboardButton("👤 Profile")
+    )
+
     keyboard.row(
         types.KeyboardButton("📊 Statistics"),
         types.KeyboardButton("👥 Refer & Earn")
@@ -127,18 +134,21 @@ def send_join_message(chat_id):
 # =========================================================
 
 def send_welcome(chat_id, first_name):
-    name = types.utils.markdown.escape(first_name or "User")
+    safe_name = escape(first_name or "User")
 
     text = (
-        f"🎉 Welcome, {name}!\n\n"
-        f"🎁 Welcome Bonus: {WELCOME_BONUS} coins\n"
-        f"👥 Referral Reward: {REFERRAL_REWARD} coins\n\n"
+        f"🎉 <b>Welcome, {safe_name}!</b>\n\n"
+        f"🎁 Welcome Bonus: <b>+{WELCOME_BONUS} coins</b>\n"
+        f"👥 Referral Reward: <b>{REFERRAL_REWARD} coins</b>\n\n"
+        "🪙 Apna balance dekhne ke liye "
+        "<b>👤 Profile</b> par click karo.\n\n"
         "Neeche se option select karo. 👇"
     )
 
     bot.send_message(
         chat_id,
         text,
+        parse_mode="HTML",
         reply_markup=main_menu()
     )
 
@@ -159,15 +169,101 @@ def notify_referral_rewards(result):
                 referrer_id,
                 (
                     "🎉 <b>Referral Reward Received!</b>\n\n"
-                    f"👤 Referral: {referred_name}\n"
-                    f"🪙 Reward: +{reward} coins\n"
-                    f"💰 Current Balance: {balance} coins"
+                    f"👤 Referral: {escape(str(referred_name))}\n"
+                    f"🪙 Reward: <b>+{reward} coins</b>\n"
+                    f"💰 Current Balance: <b>{balance} coins</b>"
                 ),
                 parse_mode="HTML"
             )
 
         except Exception as error:
             print(f"Referral notification error: {error}")
+
+
+# =========================================================
+# PROFILE
+# =========================================================
+
+def show_profile(chat_id, user_id):
+    user = get_user(user_id)
+
+    if not user:
+        bot.send_message(
+            chat_id,
+            "❌ Profile nahi mila. Please /start karo."
+        )
+        return
+
+    # Database user record
+    if isinstance(user, dict):
+        first_name = user.get("first_name") or "User"
+        username = user.get("username") or ""
+        balance = user.get("coins_balance", 0)
+        total_earned = user.get("total_coins_earned", 0)
+
+    else:
+        # Supports tuple/list database records too.
+        # Current database schema:
+        # user_id, first_name, username, coins_balance,
+        # total_coins_earned, ...
+        first_name = user[1] if len(user) > 1 else "User"
+        username = user[2] if len(user) > 2 else ""
+        balance = user[3] if len(user) > 3 else 0
+        total_earned = user[4] if len(user) > 4 else 0
+
+    # Fetch referral statistics
+    stats = get_user_stats(user_id)
+
+    if isinstance(stats, dict):
+        successful_referrals = stats.get(
+            "successful_referrals",
+            stats.get("total_referrals", 0)
+        )
+    elif isinstance(stats, (tuple, list)):
+        successful_referrals = stats[0] if stats else 0
+    else:
+        successful_referrals = 0
+
+    display_username = (
+        f"@{escape(str(username).lstrip('@'))}"
+        if username
+        else "No Username"
+    )
+
+    text = (
+        "👤 <b>MY PROFILE</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📛 <b>Name:</b> {escape(str(first_name))}\n"
+        f"🔗 <b>Username:</b> {display_username}\n"
+        f"🆔 <b>Chat ID:</b> <code>{user_id}</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"🪙 <b>Current Balance:</b> {balance} Coins\n"
+        f"🎁 <b>Total Coins Earned:</b> {total_earned} Coins\n"
+        f"👥 <b>Successful Referrals:</b> {successful_referrals}\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "💎 Keep Referring & Earn More!"
+    )
+
+    bot.send_message(
+        chat_id,
+        text,
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+
+# =========================================================
+# PROFILE BUTTON
+# =========================================================
+
+@bot.message_handler(
+    func=lambda message: message.text == "👤 Profile"
+)
+def profile_button(message):
+    show_profile(
+        chat_id=message.chat.id,
+        user_id=message.from_user.id
+    )
 
 
 # =========================================================
@@ -188,13 +284,24 @@ def finish_verification(message):
 
     notify_referral_rewards(result)
 
-    if result.get("welcome_bonus", 0) > 0:
+    welcome_bonus = result.get("welcome_bonus", 0)
+
+    if welcome_bonus > 0:
+        user = get_user(user_id)
+        balance = (
+            user.get("coins_balance", 0)
+            if isinstance(user, dict)
+            else 0
+        )
+
         bot.send_message(
             message.chat.id,
             (
-                f"🎁 Welcome bonus: "
-                f"+{result['welcome_bonus']} coins!"
-            )
+                "🎉 <b>Coins Credited Successfully!</b>\n\n"
+                f"🎁 Welcome Bonus: <b>+{welcome_bonus} Coins</b>\n"
+                f"🪙 Current Balance: <b>{balance} Coins</b>"
+            ),
+            parse_mode="HTML"
         )
 
     bot.send_message(
@@ -260,7 +367,13 @@ def start_command(message):
     else:
         bot.send_message(
             message.chat.id,
-            "👋 Welcome back!\n\nNeeche se option select karo. 👇",
+            (
+                "👋 <b>Welcome back!</b>\n\n"
+                "🪙 Apna balance check karne ke liye "
+                "<b>👤 Profile</b> dabao.\n\n"
+                "Neeche se option select karo. 👇"
+            ),
+            parse_mode="HTML",
             reply_markup=main_menu()
         )
 
@@ -276,7 +389,10 @@ def check_join_callback(call):
     user_id = call.from_user.id
 
     if check_membership(user_id):
-        complete_verification(user_id)
+        result = complete_verification(user_id)
+
+        if result.get("success"):
+            notify_referral_rewards(result)
 
         bot.answer_callback_query(
             call.id,
@@ -293,7 +409,10 @@ def check_join_callback(call):
 
         bot.send_message(
             call.message.chat.id,
-            "🎉 Verification successful!\n\nNeeche se option select karo. 👇",
+            (
+                "🎉 Verification successful!\n\n"
+                "Neeche se option select karo. 👇"
+            ),
             reply_markup=main_menu()
         )
 
