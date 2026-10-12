@@ -19,6 +19,10 @@ from database import (
 )
 
 
+# =========================================================
+# MEMBERSHIP CHECK
+# =========================================================
+
 def check_membership(user_id):
     try:
         group_member = bot.get_chat_member(
@@ -31,20 +35,25 @@ def check_membership(user_id):
             user_id
         )
 
-        valid_statuses = [
+        allowed_statuses = (
             "member",
             "administrator",
             "creator"
-        ]
-
-        return (
-            group_member.status in valid_statuses
-            and channel_member.status in valid_statuses
         )
 
-    except Exception:
+        return (
+            group_member.status in allowed_statuses
+            and channel_member.status in allowed_statuses
+        )
+
+    except Exception as error:
+        print(f"Membership check error: {error}")
         return False
 
+
+# =========================================================
+# JOIN KEYBOARD
+# =========================================================
 
 def join_keyboard():
     keyboard = types.InlineKeyboardMarkup()
@@ -53,17 +62,14 @@ def join_keyboard():
         types.InlineKeyboardButton(
             "📢 Join Group",
             url=GROUP_INVITE_LINK
-        )
-    )
-
-    keyboard.row(
+        ),
         types.InlineKeyboardButton(
             "📣 Join Channel",
             url=CHANNEL_INVITE_LINK
         )
     )
 
-    keyboard.row(
+    keyboard.add(
         types.InlineKeyboardButton(
             "✅ Check Join",
             callback_data="check_join"
@@ -73,162 +79,134 @@ def join_keyboard():
     return keyboard
 
 
+# =========================================================
+# MAIN MENU
+# =========================================================
+
 def main_menu():
     keyboard = types.ReplyKeyboardMarkup(
         resize_keyboard=True
     )
 
     keyboard.row(
-        "📊 Statistics",
-        "👥 Refer & Earn"
+        types.KeyboardButton("📊 Statistics"),
+        types.KeyboardButton("👥 Refer & Earn")
     )
 
     keyboard.row(
-        "🔓 Open Links"
+        types.KeyboardButton("🔓 Open Links")
+    )
+
+    keyboard.row(
+        types.KeyboardButton("🎁 Redeem Code")
     )
 
     return keyboard
 
 
+# =========================================================
+# JOIN MESSAGE
+# =========================================================
+
 def send_join_message(chat_id):
     bot.send_message(
         chat_id,
-        "🔐 <b>Join Required</b>\n\n"
-        "Bot use karne ke liye hamara private group "
-        "aur private channel dono join karo.\n\n"
-        "Join karne ke baad neeche Check Join button dabao.",
-        reply_markup=join_keyboard(),
-        parse_mode="HTML"
+        (
+            "👋 <b>Welcome!</b>\n\n"
+            "Bot use karne ke liye hamara group aur channel "
+            "dono join karo.\n\n"
+            "Join karne ke baad <b>✅ Check Join</b> dabao."
+        ),
+        parse_mode="HTML",
+        reply_markup=join_keyboard()
     )
 
 
-def send_welcome(chat_id, first_name, bonus=0, balance=None):
+# =========================================================
+# WELCOME MESSAGE
+# =========================================================
+
+def send_welcome(chat_id, first_name):
+    name = types.utils.markdown.escape(first_name or "User")
+
     text = (
-        f"👋 Welcome, <b>{first_name}</b>!\n\n"
-        "🎉 Aapka verification complete ho gaya hai.\n\n"
+        f"🎉 Welcome, {name}!\n\n"
+        f"🎁 Welcome Bonus: {WELCOME_BONUS} coins\n"
+        f"👥 Referral Reward: {REFERRAL_REWARD} coins\n\n"
+        "Neeche se option select karo. 👇"
     )
-
-    if bonus > 0:
-        text += (
-            f"🎁 Welcome Bonus: <b>+{bonus} Coins</b>\n"
-        )
-
-    if balance is not None:
-        text += (
-            f"💰 Current Balance: <b>{balance} Coins</b>\n"
-        )
-
-    text += "\nNeeche se apna option select karo. ❤️🤍"
 
     bot.send_message(
         chat_id,
         text,
-        reply_markup=main_menu(),
-        parse_mode="HTML"
+        reply_markup=main_menu()
     )
 
 
-def send_referral_notifications(result):
-    rewarded_referrals = result.get(
-        "newly_rewarded_referrals",
-        []
-    )
+# =========================================================
+# REFERRAL NOTIFICATIONS
+# =========================================================
 
-    for referral in rewarded_referrals:
-        referrer_id = referral["referrer_id"]
-        referred_user_id = referral["referred_user_id"]
-
-        referred_name = referral.get(
-            "referred_user_name",
-            "User"
-        )
-
-        referred_username = referral.get(
-            "referred_user_username",
-            ""
-        )
-
-        referrer_name = referral.get(
-            "referrer_name",
-            "User"
-        )
-
-        referrer_username = referral.get(
-            "referrer_username",
-            ""
-        )
-
-        reward = referral.get(
-            "reward",
-            REFERRAL_REWARD
-        )
-
-        referrer_balance = referral.get(
-            "referrer_balance",
-            0
-        )
-
-        referred_display = f"<b>{referred_name}</b>"
-
-        if referred_username:
-            referred_display += f" (@{referred_username})"
-
-        referrer_display = f"<b>{referrer_name}</b>"
-
-        if referrer_username:
-            referrer_display += f" (@{referrer_username})"
+def notify_referral_rewards(result):
+    for item in result.get("newly_rewarded_referrals", []):
+        referrer_id = item["referrer_id"]
+        referred_name = item.get("referred_user_name") or "User"
+        reward = item.get("reward", REFERRAL_REWARD)
+        balance = item.get("referrer_balance", 0)
 
         try:
             bot.send_message(
                 referrer_id,
-                "🎉 <b>Successful Referral!</b>\n\n"
-                f"👤 {referred_display} ne aapka referral link use karke "
-                "group aur channel verification complete kar liya.\n\n"
-                f"🪙 Referral Reward: <b>+{reward} Coins</b>\n"
-                f"💰 Current Balance: <b>{referrer_balance} Coins</b>\n\n"
-                "Thank you for referring! ❤️🤍",
+                (
+                    "🎉 <b>Referral Reward Received!</b>\n\n"
+                    f"👤 Referral: {referred_name}\n"
+                    f"🪙 Reward: +{reward} coins\n"
+                    f"💰 Current Balance: {balance} coins"
+                ),
                 parse_mode="HTML"
             )
-        except Exception:
-            pass
 
-        try:
-            user_stats = get_user_stats(referred_user_id)
-            user_balance = user_stats["coins_balance"]
-
-            bot.send_message(
-                referred_user_id,
-                "🎉 <b>Referral Verified Successfully!</b>\n\n"
-                f"👑 Referred By: {referrer_display}\n"
-                f"🎁 Welcome Bonus: <b>+{WELCOME_BONUS} Coins</b>\n"
-                f"💰 Current Balance: <b>{user_balance} Coins</b>\n\n"
-                "Aapka referral successfully verify ho gaya hai. ❤️🤍",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        except Exception as error:
+            print(f"Referral notification error: {error}")
 
 
-def finish_verification(chat_id, user_id, first_name):
+# =========================================================
+# FINISH VERIFICATION
+# =========================================================
+
+def finish_verification(message):
+    user_id = message.from_user.id
+
     result = complete_verification(user_id)
 
-    if not result["success"]:
+    if not result.get("success"):
         bot.send_message(
-            chat_id,
-            "❌ Verification complete nahi ho paya.\n"
-            "Please dobara /start try karo."
+            message.chat.id,
+            "❌ Verification nahi ho paayi. Dobara try karo."
         )
         return
 
-    send_welcome(
-        chat_id,
-        first_name,
-        result.get("welcome_bonus", 0),
-        result.get("coins_balance", 0)
+    notify_referral_rewards(result)
+
+    if result.get("welcome_bonus", 0) > 0:
+        bot.send_message(
+            message.chat.id,
+            (
+                f"🎁 Welcome bonus: "
+                f"+{result['welcome_bonus']} coins!"
+            )
+        )
+
+    bot.send_message(
+        message.chat.id,
+        "✅ Verification successful!\n\nNeeche se option select karo. 👇",
+        reply_markup=main_menu()
     )
 
-    send_referral_notifications(result)
 
+# =========================================================
+# START COMMAND
+# =========================================================
 
 @bot.message_handler(commands=["start"])
 def start_command(message):
@@ -236,47 +214,60 @@ def start_command(message):
     first_name = message.from_user.first_name or "User"
     username = message.from_user.username or ""
 
-    referral_id = None
-    parts = message.text.split(maxsplit=1)
+    referred_by = None
+
+    parts = (message.text or "").split(maxsplit=1)
 
     if len(parts) > 1:
-        referral_code = parts[1].strip()
+        referral_parameter = parts[1].strip()
 
-        if referral_code.isdigit():
-            referral_id = int(referral_code)
+        if referral_parameter.isdigit():
+            potential_referrer = int(referral_parameter)
 
-            if referral_id == user_id:
-                referral_id = None
+            if potential_referrer != user_id:
+                referred_by = potential_referrer
 
-    existing_user = get_user(user_id)
-
-    register_user(
+    is_new_user = register_user(
         user_id=user_id,
         first_name=first_name,
         username=username,
-        referred_by=referral_id
+        referred_by=referred_by
     )
+
+    user = get_user(user_id)
+
+    if not user:
+        bot.send_message(
+            message.chat.id,
+            "❌ User registration failed. Please try again."
+        )
+        return
 
     if not check_membership(user_id):
         send_join_message(message.chat.id)
         return
 
-    if existing_user and existing_user.get("is_verified"):
+    result = complete_verification(user_id)
+
+    if result.get("success"):
+        notify_referral_rewards(result)
+
+    if is_new_user:
+        send_welcome(
+            message.chat.id,
+            first_name
+        )
+    else:
         bot.send_message(
             message.chat.id,
-            "❤️🤍 <b>Welcome Back!</b>\n\n"
-            "Neeche se apna option select karo.",
-            reply_markup=main_menu(),
-            parse_mode="HTML"
+            "👋 Welcome back!\n\nNeeche se option select karo. 👇",
+            reply_markup=main_menu()
         )
-        return
 
-    finish_verification(
-        message.chat.id,
-        user_id,
-        first_name
-    )
 
+# =========================================================
+# CHECK JOIN CALLBACK
+# =========================================================
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "check_join"
@@ -284,28 +275,12 @@ def start_command(message):
 def check_join_callback(call):
     user_id = call.from_user.id
 
-    if not check_membership(user_id):
+    if check_membership(user_id):
+        complete_verification(user_id)
+
         bot.answer_callback_query(
             call.id,
-            "Pehle group aur channel dono join karo!",
-            show_alert=True
-        )
-        return
-
-    user = get_user(user_id)
-
-    if not user:
-        bot.answer_callback_query(
-            call.id,
-            "Pehle /start karo!",
-            show_alert=True
-        )
-        return
-
-    if user.get("is_verified"):
-        bot.answer_callback_query(
-            call.id,
-            "Aapka verification pehle se complete hai!"
+            "✅ Membership verified!"
         )
 
         try:
@@ -318,30 +293,13 @@ def check_join_callback(call):
 
         bot.send_message(
             call.message.chat.id,
-            "❤️🤍 <b>Welcome Back!</b>\n\n"
-            "Aapka account pehle se verified hai.",
-            reply_markup=main_menu(),
-            parse_mode="HTML"
+            "🎉 Verification successful!\n\nNeeche se option select karo. 👇",
+            reply_markup=main_menu()
         )
-        return
 
-    bot.answer_callback_query(
-        call.id,
-        "Verification successful!"
-    )
-
-    try:
-        bot.delete_message(
-            call.message.chat.id,
-            call.message.message_id
+    else:
+        bot.answer_callback_query(
+            call.id,
+            "❌ Group aur channel dono join karo.",
+            show_alert=True
         )
-    except Exception:
-        pass
-
-    first_name = call.from_user.first_name or "User"
-
-    finish_verification(
-        call.message.chat.id,
-        user_id,
-        first_name
-    )
