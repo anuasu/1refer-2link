@@ -32,42 +32,40 @@ def show_links(chat_id, user_id, notice=None):
     next_link = None
     next_number = None
 
-    for index, link in enumerate(links, start=1):
+    for number, link in enumerate(links, start=1):
         if not has_unlocked_link(user_id, int(link["id"])):
             next_link = link
-            next_number = index
+            next_number = number
             break
 
+    text = (
+        "🔓 <b>OPEN LINKS</b>\n\n"
+        f"🔗 Total Available Links: <b>{len(links)}</b>\n"
+    )
+
     if next_link is None:
-        text = (
-            "🔓 <b>OPEN LINKS</b>\n\n"
-            f"🔗 Total Available Links: <b>{len(links)}</b>\n\n"
-            "🎉 Aapne saare available links unlock kar liye hain!"
-        )
+        text += "\n🎉 Aapne saare available links unlock kar liye hain!"
         if notice:
             text = notice + "\n\n" + text
         bot.send_message(chat_id, text, parse_mode="HTML")
         return
 
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(
-        types.InlineKeyboardButton(
-            f"🔓 Open Link #{next_number} | {LINK_UNLOCK_COST} Coin",
-            callback_data=f"unlock_{next_link['id']}"
-        )
-    )
-
-    text = (
-        "🔓 <b>OPEN LINKS</b>\n\n"
-        f"🔗 Total Available Links: <b>{len(links)}</b>\n"
-        f"📍 Current Link: <b>#{next_number}</b>\n"
+    text += (
+        f"📍 Next Link: <b>#{next_number}</b>\n"
         f"💰 Unlock Cost: <b>{LINK_UNLOCK_COST} Coin</b>\n\n"
-        "Link unlock karne ke liye neeche button dabao.\n"
-        "Ek hi link ko dobara unlock karne par coins dobara nahi katenge."
+        "Neeche button dabakar next link unlock karo."
     )
 
     if notice:
         text = notice + "\n\n" + text
+
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.add(
+        types.InlineKeyboardButton(
+            f"🔓 Open Link #{next_number}",
+            callback_data=f"unlock_{next_link['id']}"
+        )
+    )
 
     bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -141,7 +139,7 @@ def unlock_link_callback(call):
         reason = result.get("reason")
 
         if reason == "insufficient_coins":
-            error_message = f"Coins kam hain! Balance: {result.get('balance', 0)}"
+            error_message = f"Coins kam hain! Balance: {get_user(user_id)['coins_balance']}"
         elif reason == "user_not_verified":
             error_message = "Pehle verification complete karo!"
         else:
@@ -152,34 +150,39 @@ def unlock_link_callback(call):
 
     bot.answer_callback_query(
         call.id,
-        "Link pehle se unlocked hai!" if result["already_unlocked"] else "Link unlock ho gaya!"
+        "Pehle se unlocked hai!" if result["already_unlocked"] else "Link unlock ho gaya!"
     )
 
     links = get_active_links()
     current_number = next(
-        (index for index, link in enumerate(links, start=1) if int(link["id"]) == link_id),
+        (
+            number
+            for number, link in enumerate(links, start=1)
+            if int(link["id"]) == link_id
+        ),
         None
     )
 
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton("🔗 Open Link", url=result["url"]))
+    keyboard.add(
+        types.InlineKeyboardButton("🔗 Open Link", url=result["url"])
+    )
 
     bot.send_message(
         call.message.chat.id,
-        "✅ <b>Link Unlock Successful!</b>\n\n"
-        + (f"📍 Link <b>#{current_number}</b> successfully unlock ho gaya!\n" if current_number else "")
+        "✅ <b>Link Unlocked!</b>\n\n"
+        + (f"📍 Link: <b>#{current_number}</b>\n" if current_number else "")
         + f"💰 Remaining Coins: <b>{result['balance']}</b>\n\n"
         "Neeche button se link open karo.",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
 
-    notice = (
-        f"✅ Aapne Link #{current_number} successfully unlock kar liya!"
-        if current_number else "✅ Link successfully unlock ho gaya!"
+    show_links(
+        call.message.chat.id,
+        user_id,
+        notice=f"✅ Link #{current_number} unlock ho gaya!" if current_number else None
     )
-
-    show_links(call.message.chat.id, user_id, notice=notice)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_links")
@@ -191,7 +194,7 @@ def back_to_links_callback(call):
         return
 
     if not check_membership(user_id):
-        bot.answer_callback_query(call.id, "Pehle group aur channel dono join karo!", show_alert=True)
+        bot.answer_callback_query(call.id, "Pehle group aur channel join karo!", show_alert=True)
         return
 
     bot.answer_callback_query(call.id)
