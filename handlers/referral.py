@@ -17,7 +17,7 @@ from database import (
 
 from handlers.start import (
     check_membership,
-    finish_verification,
+    process_verification,
 )
 
 
@@ -59,6 +59,10 @@ def referral_join_keyboard():
 def show_referral_info(message):
     user_id = message.from_user.id
 
+    # -----------------------------------------
+    # CHECK USER REGISTRATION
+    # -----------------------------------------
+
     user = get_user(user_id)
 
     if not user:
@@ -67,6 +71,10 @@ def show_referral_info(message):
             "Please register your account first by using /start."
         )
         return
+
+    # -----------------------------------------
+    # CHECK GROUP AND CHANNEL MEMBERSHIP
+    # -----------------------------------------
 
     if not check_membership(user_id):
         bot.send_message(
@@ -83,11 +91,36 @@ def show_referral_info(message):
         )
         return
 
+    # -----------------------------------------
+    # COMPLETE VERIFICATION IF REQUIRED
+    # -----------------------------------------
+
     if not user.get("is_verified"):
-        finish_verification(message)
-        return
+        result = process_verification(user_id)
+
+        if not result or not result.get("success"):
+            bot.send_message(
+                message.chat.id,
+                "❌ Verification failed. Please try again."
+            )
+            return
+
+    # -----------------------------------------
+    # GET UPDATED USER STATS
+    # -----------------------------------------
 
     stats = get_user_stats(user_id)
+
+    if not stats:
+        bot.send_message(
+            message.chat.id,
+            "❌ Unable to load your referral statistics. Please try again."
+        )
+        return
+
+    # -----------------------------------------
+    # GENERATE REFERRAL LINK
+    # -----------------------------------------
 
     bot_username = bot.get_me().username
 
@@ -101,6 +134,10 @@ def show_referral_info(message):
         f"&text={quote('Join this bot using my referral link!')}"
     )
 
+    # -----------------------------------------
+    # REFERRAL INFORMATION
+    # -----------------------------------------
+
     text = (
         "👥 <b>REFER &amp; EARN</b>\n\n"
         "Share your referral link with your friends!\n\n"
@@ -112,12 +149,16 @@ def show_referral_info(message):
         "🔗 <b>Your Referral Link:</b>\n"
         f"<code>{referral_link}</code>\n\n"
         f"👤 Successful Referrals: "
-        f"<b>{stats['referral_count']}</b>\n"
+        f"<b>{stats.get('referral_count', 0)}</b>\n"
         f"🪙 Total Coins Earned: "
-        f"<b>{stats['total_coins_earned']}</b>\n"
+        f"<b>{stats.get('total_coins_earned', 0)}</b>\n"
         f"💰 Current Balance: "
-        f"<b>{stats['coins_balance']}</b>"
+        f"<b>{stats.get('coins_balance', 0)}</b>"
     )
+
+    # -----------------------------------------
+    # SHARE BUTTON
+    # -----------------------------------------
 
     keyboard = types.InlineKeyboardMarkup()
 
@@ -127,6 +168,10 @@ def show_referral_info(message):
             url=share_url
         )
     )
+
+    # -----------------------------------------
+    # SEND REFERRAL PAGE
+    # -----------------------------------------
 
     bot.send_message(
         message.chat.id,
