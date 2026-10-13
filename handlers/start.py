@@ -129,38 +129,35 @@ def send_join_message(chat_id):
 
 
 # =========================================================
-# REFERRER INFORMATION
+# GET REFERRER DISPLAY NAME
+# USERNAME FIRST, NAME AS FALLBACK
 # =========================================================
 
 def get_referrer_name(result):
-    """
-    complete_verification() se referrer ka naam nikalta hai.
-    """
+    username = result.get("referrer_username")
+
+    if username and str(username).strip():
+        return f"@{str(username).strip().lstrip('@')}"
 
     name = result.get("referrer_name")
 
-    if name:
-        return str(name)
-
-    username = result.get("referrer_username")
-
-    if username:
-        return f"@{str(username).lstrip('@')}"
+    if name and str(name).strip():
+        return str(name).strip()
 
     return "A fellow member"
 
 
 # =========================================================
-# REFERRED USER NOTIFICATION
+# NOTIFY REFERRED USER
 # =========================================================
 
 def notify_referred_user(user_id, result):
     """
-    Referral se join karne wale user ko batata hai
-    ki use kisne refer kiya.
+    Referral se join karne wale user ko referrer ki
+    username-first information bhejta hai.
 
-    Notification sirf tab bhejte hain jab user ko
-    pehli baar welcome bonus credit hua ho.
+    Notification welcome bonus pehli baar credit hone
+    par bheja jata hai.
     """
 
     welcome_bonus = result.get("welcome_bonus", 0)
@@ -170,11 +167,12 @@ def notify_referred_user(user_id, result):
 
     referrer_id = result.get("referrer_id")
 
-    # Self-referral ya missing referral information.
     if not referrer_id or referrer_id == user_id:
         return
 
-    referrer_name = escape(get_referrer_name(result))
+    referrer_display = escape(
+        get_referrer_name(result)
+    )
 
     user = get_user(user_id)
 
@@ -186,7 +184,7 @@ def notify_referred_user(user_id, result):
     message = (
         "🎉 <b>Welcome to Refer &amp; Earn Bot!</b>\n\n"
         "👥 <b>You joined using a referral link!</b>\n\n"
-        f"🤝 <b>Referred By:</b> {referrer_name}\n"
+        f"🤝 <b>Referred By:</b> {referrer_display}\n"
         f"🎁 <b>Welcome Bonus:</b> +{welcome_bonus} Coins\n"
         f"🪙 <b>Your Balance:</b> {balance} Coins\n\n"
         "💓 Welcome aboard!\n"
@@ -201,28 +199,51 @@ def notify_referred_user(user_id, result):
         )
 
     except Exception as error:
-        print(f"Referred user notification error: {error}")
+        print(
+            f"Referred user notification error: {error}"
+        )
 
 
 # =========================================================
-# REFERRER REWARD NOTIFICATION
+# NOTIFY REFERRER ABOUT REWARD
 # =========================================================
 
 def notify_referral_rewards(result):
-    """
-    Referrer ko notification tab bhejta hai
-    jab uska referral reward actually credit ho.
-    """
-
-    for item in result.get("newly_rewarded_referrals", []):
+    for item in result.get(
+        "newly_rewarded_referrals",
+        []
+    ):
         referrer_id = item.get("referrer_id")
 
-        referred_name = (
-            item.get("referred_user_name") or "User"
+        referred_username = item.get(
+            "referred_user_username"
         )
 
-        reward = item.get("reward", REFERRAL_REWARD)
-        balance = item.get("referrer_balance", 0)
+        referred_name = item.get(
+            "referred_user_name"
+        )
+
+        # Referred user ka username first preference.
+        if referred_username and str(
+            referred_username
+        ).strip():
+            referral_display = (
+                f"@{str(referred_username).strip().lstrip('@')}"
+            )
+        elif referred_name:
+            referral_display = str(referred_name)
+        else:
+            referral_display = "User"
+
+        reward = item.get(
+            "reward",
+            REFERRAL_REWARD
+        )
+
+        balance = item.get(
+            "referrer_balance",
+            0
+        )
 
         if not referrer_id:
             continue
@@ -233,7 +254,7 @@ def notify_referral_rewards(result):
                 (
                     "🎉 <b>Referral Reward Received!</b>\n\n"
                     f"👤 <b>Referral:</b> "
-                    f"{escape(str(referred_name))}\n"
+                    f"{escape(referral_display)}\n"
                     f"🪙 <b>Reward:</b> +{reward} Coins\n"
                     f"💰 <b>Current Balance:</b> "
                     f"{balance} Coins"
@@ -242,7 +263,9 @@ def notify_referral_rewards(result):
             )
 
         except Exception as error:
-            print(f"Referral notification error: {error}")
+            print(
+                f"Referral notification error: {error}"
+            )
 
 
 # =========================================================
@@ -250,17 +273,16 @@ def notify_referral_rewards(result):
 # =========================================================
 
 def process_verification(user_id):
-    """
-    Verification, welcome bonus aur referral notifications.
-    """
-
     result = complete_verification(user_id)
 
     if not result.get("success"):
         return result
 
     # Referral se join karne wale user ko notification.
-    notify_referred_user(user_id, result)
+    notify_referred_user(
+        user_id,
+        result
+    )
 
     # Referrer ko reward credit hone par notification.
     notify_referral_rewards(result)
@@ -308,20 +330,36 @@ def show_profile(chat_id, user_id):
         first_name = user.get("first_name") or "User"
         username = user.get("username") or ""
         balance = user.get("coins_balance", 0)
-        total_earned = user.get("total_coins_earned", 0)
+        total_earned = user.get(
+            "total_coins_earned",
+            0
+        )
 
     else:
-        first_name = user[1] if len(user) > 1 else "User"
-        username = user[2] if len(user) > 2 else ""
-        balance = user[3] if len(user) > 3 else 0
-        total_earned = user[4] if len(user) > 4 else 0
+        first_name = (
+            user[1] if len(user) > 1 else "User"
+        )
+        username = (
+            user[2] if len(user) > 2 else ""
+        )
+        balance = (
+            user[3] if len(user) > 3 else 0
+        )
+        total_earned = (
+            user[4] if len(user) > 4 else 0
+        )
 
     stats = get_user_stats(user_id)
 
     if isinstance(stats, dict):
-        successful_referrals = stats.get("referral_count", 0)
+        successful_referrals = stats.get(
+            "referral_count",
+            0
+        )
     elif isinstance(stats, (tuple, list)):
-        successful_referrals = stats[0] if stats else 0
+        successful_referrals = (
+            stats[0] if stats else 0
+        )
     else:
         successful_referrals = 0
 
@@ -339,7 +377,8 @@ def show_profile(chat_id, user_id):
         f"🆔 <b>Chat ID:</b> <code>{user_id}</code>\n\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         f"🪙 <b>Current Balance:</b> {balance} Coins\n"
-        f"🎁 <b>Total Coins Earned:</b> {total_earned} Coins\n"
+        f"🎁 <b>Total Coins Earned:</b> "
+        f"{total_earned} Coins\n"
         f"👥 <b>Successful Referrals:</b> "
         f"{successful_referrals}\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -384,10 +423,14 @@ def finish_verification(message):
         )
         return
 
-    welcome_bonus = result.get("welcome_bonus", 0)
+    welcome_bonus = result.get(
+        "welcome_bonus",
+        0
+    )
 
     if welcome_bonus > 0:
         user = get_user(user_id)
+
         balance = (
             user.get("coins_balance", 0)
             if isinstance(user, dict)
@@ -399,15 +442,18 @@ def finish_verification(message):
             (
                 "🎉 <b>Coins Credited Successfully!</b>\n\n"
                 f"🎁 Welcome Bonus: <b>+{welcome_bonus} Coins</b>\n"
-                f"🪙 Current Balance: <b>{balance} Coins</b>"
+                f"🪙 <b>Current Balance:</b> "
+                f"{balance} Coins"
             ),
             parse_mode="HTML"
         )
 
     bot.send_message(
         message.chat.id,
-        "✅ Verification successful!\n\n"
-        "Neeche se option select karo. 👇",
+        (
+            "✅ Verification successful!\n\n"
+            "Neeche se option select karo. 👇"
+        ),
         reply_markup=main_menu()
     )
 
@@ -419,18 +465,28 @@ def finish_verification(message):
 @bot.message_handler(commands=["start"])
 def start_command(message):
     user_id = message.from_user.id
-    first_name = message.from_user.first_name or "User"
-    username = message.from_user.username or ""
+
+    first_name = (
+        message.from_user.first_name or "User"
+    )
+
+    username = (
+        message.from_user.username or ""
+    )
 
     referred_by = None
 
-    parts = (message.text or "").split(maxsplit=1)
+    parts = (message.text or "").split(
+        maxsplit=1
+    )
 
     if len(parts) > 1:
         referral_parameter = parts[1].strip()
 
         if referral_parameter.isdigit():
-            potential_referrer = int(referral_parameter)
+            potential_referrer = int(
+                referral_parameter
+            )
 
             if potential_referrer != user_id:
                 referred_by = potential_referrer
@@ -452,7 +508,9 @@ def start_command(message):
         return
 
     if not check_membership(user_id):
-        send_join_message(message.chat.id)
+        send_join_message(
+            message.chat.id
+        )
         return
 
     result = process_verification(user_id)
@@ -460,7 +518,10 @@ def start_command(message):
     if not result.get("success"):
         bot.send_message(
             message.chat.id,
-            "❌ Verification nahi ho paayi. Please /start dobara try karo."
+            (
+                "❌ Verification nahi ho paayi. "
+                "Please /start dobara try karo."
+            )
         )
         return
 
@@ -469,6 +530,7 @@ def start_command(message):
             message.chat.id,
             first_name
         )
+
     else:
         bot.send_message(
             message.chat.id,
