@@ -5,7 +5,7 @@ from config import (
     DATABASE_FILE,
     WELCOME_BONUS,
     REFERRAL_REWARD,
-    LINK_UNLOCK_COST
+    LINK_UNLOCK_COST,
 )
 
 
@@ -16,7 +16,7 @@ from config import (
 def get_connection():
     connection = sqlite3.connect(
         DATABASE_FILE,
-        timeout=30
+        timeout=30,
     )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
@@ -103,8 +103,7 @@ def init_db():
                 UNIQUE(code, user_id),
                 FOREIGN KEY (code)
                     REFERENCES redeem_codes(code),
-                FOREIGN KEY (user_id)
-                    REFERENCES users(user_id)
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
 
             CREATE TABLE IF NOT EXISTS redeem_settings (
@@ -112,6 +111,7 @@ def init_db():
                 auto_enabled INTEGER DEFAULT 0,
                 channel_id INTEGER,
                 post_time TEXT DEFAULT '11:00',
+                repost_interval_hours INTEGER DEFAULT 24,
                 reward_coins INTEGER DEFAULT 10,
                 max_users INTEGER DEFAULT 100,
                 expiry_hours INTEGER DEFAULT 24,
@@ -123,36 +123,53 @@ def init_db():
             );
 
             CREATE INDEX IF NOT EXISTS idx_users_referred_by
-            ON users(referred_by);
+                ON users(referred_by);
 
             CREATE INDEX IF NOT EXISTS idx_users_balance
-            ON users(coins_balance DESC);
+                ON users(coins_balance DESC);
 
             CREATE INDEX IF NOT EXISTS idx_links_active
-            ON links(is_active);
+                ON links(is_active);
 
             CREATE INDEX IF NOT EXISTS idx_transactions_user
-            ON coin_transactions(user_id);
+                ON coin_transactions(user_id);
 
             CREATE INDEX IF NOT EXISTS idx_referrals_referrer
-            ON referrals(referrer_id);
+                ON referrals(referrer_id);
 
             CREATE INDEX IF NOT EXISTS idx_redemptions_user
-            ON redeem_redemptions(user_id);
+                ON redeem_redemptions(user_id);
         """)
 
-        # Default automatic-code settings.
+        # -------------------------------------------------
+        # SAFE MIGRATION FOR EXISTING DATABASES
+        # -------------------------------------------------
+
+        columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(redeem_settings)"
+            ).fetchall()
+        }
+
+        if "repost_interval_hours" not in columns:
+            conn.execute("""
+                ALTER TABLE redeem_settings
+                ADD COLUMN repost_interval_hours INTEGER DEFAULT 24
+            """)
+
         conn.execute("""
             INSERT OR IGNORE INTO redeem_settings (
                 id,
                 auto_enabled,
                 post_time,
+                repost_interval_hours,
                 reward_coins,
                 max_users,
                 expiry_hours,
                 updated_at
             )
-            VALUES (1, 0, '11:00', 10, 100, 24, ?)
+            VALUES (1, 0, '11:00', 24, 10, 100, 24, ?)
         """, (current_time(),))
 
 
@@ -164,7 +181,7 @@ def register_user(
     user_id,
     first_name="",
     username="",
-    referred_by=None
+    referred_by=None,
 ):
     now = current_time()
 
@@ -186,7 +203,7 @@ def register_user(
                 first_name or "",
                 username or "",
                 now,
-                user_id
+                user_id,
             ))
             return False
 
@@ -224,7 +241,7 @@ def register_user(
             username or "",
             referred_by,
             now,
-            now
+            now,
         ))
 
         if referred_by is not None:
@@ -239,7 +256,7 @@ def register_user(
             """, (
                 user_id,
                 referred_by,
-                now
+                now,
             ))
 
         return True
@@ -284,7 +301,7 @@ def add_coins(
     user_id,
     amount,
     transaction_type,
-    description=""
+    description="",
 ):
     if (
         not isinstance(amount, int)
@@ -315,7 +332,7 @@ def add_coins(
             amount,
             amount,
             now,
-            user_id
+            user_id,
         ))
 
         conn.execute("""
@@ -332,7 +349,7 @@ def add_coins(
             amount,
             transaction_type,
             description,
-            now
+            now,
         ))
 
         return True
@@ -383,7 +400,7 @@ def reward_pending_referrals(conn, referrer_id, now):
               AND rewarded = 0
         """, (
             referred_user_id,
-            referrer_id
+            referrer_id,
         ))
 
         if updated.rowcount != 1:
@@ -399,7 +416,7 @@ def reward_pending_referrals(conn, referrer_id, now):
             REFERRAL_REWARD,
             REFERRAL_REWARD,
             now,
-            referrer_id
+            referrer_id,
         ))
 
         conn.execute("""
@@ -415,7 +432,7 @@ def reward_pending_referrals(conn, referrer_id, now):
             referrer_id,
             REFERRAL_REWARD,
             f"Successful referral: {referred_user_id}",
-            now
+            now,
         ))
 
         balance = conn.execute("""
@@ -432,7 +449,7 @@ def reward_pending_referrals(conn, referrer_id, now):
             "referred_user_id": referred_user_id,
             "referred_user_name": referral["first_name"] or "User",
             "referred_user_username": referral["username"] or "",
-            "reward": REFERRAL_REWARD
+            "reward": REFERRAL_REWARD,
         })
 
     return newly_rewarded
@@ -448,7 +465,7 @@ def complete_verification(user_id):
         "referrer_name": None,
         "referrer_username": None,
         "newly_rewarded_referrals": [],
-        "coins_balance": 0
+        "coins_balance": 0,
     }
 
     with get_connection() as conn:
@@ -482,7 +499,7 @@ def complete_verification(user_id):
                 WELCOME_BONUS,
                 WELCOME_BONUS,
                 now,
-                user_id
+                user_id,
             ))
 
             if updated.rowcount == 1:
@@ -498,7 +515,7 @@ def complete_verification(user_id):
                 """, (
                     user_id,
                     WELCOME_BONUS,
-                    now
+                    now,
                 ))
 
                 result["welcome_bonus"] = WELCOME_BONUS
@@ -525,7 +542,7 @@ def complete_verification(user_id):
                     reward_pending_referrals(
                         conn,
                         referral["referrer_id"],
-                        now
+                        now,
                     )
                 )
 
@@ -533,7 +550,7 @@ def complete_verification(user_id):
             reward_pending_referrals(
                 conn,
                 user_id,
-                now
+                now,
             )
         )
 
@@ -569,7 +586,7 @@ def get_user_stats(user_id):
                 "coins_balance": 0,
                 "total_coins_earned": 0,
                 "total_coins_spent": 0,
-                "referral_count": 0
+                "referral_count": 0,
             }
 
         referral_count = conn.execute("""
@@ -583,7 +600,7 @@ def get_user_stats(user_id):
             "coins_balance": row["coins_balance"],
             "total_coins_earned": row["total_coins_earned"],
             "total_coins_spent": row["total_coins_spent"],
-            "referral_count": referral_count
+            "referral_count": referral_count,
         }
 
 
@@ -619,12 +636,11 @@ def get_global_stats():
         return {
             "total_users": total_users,
             "total_referrals": total_referrals,
-            "total_coins_spent": total_coins_spent
+            "total_coins_spent": total_coins_spent,
         }
 
 
 def get_top_users(limit=50):
-    """Return users ranked by current coin balance."""
     limit = max(1, min(int(limit), 50))
 
     with get_connection() as conn:
@@ -660,7 +676,7 @@ def create_redeem_code(
     created_by=None,
     is_auto=False,
     channel_id=None,
-    message_id=None
+    message_id=None,
 ):
     if not isinstance(code, str):
         return False
@@ -711,7 +727,7 @@ def create_redeem_code(
                 int(bool(is_auto)),
                 channel_id,
                 message_id,
-                now
+                now,
             ))
 
             return True
@@ -743,10 +759,6 @@ def get_redeem_code(code):
 
 
 def redeem_code_for_user(user_id, code):
-    """
-    Atomically redeem a code, add coins and record the transaction.
-    Each user can redeem each code once.
-    """
     if not isinstance(code, str):
         return {"success": False, "reason": "invalid_code"}
 
@@ -758,8 +770,6 @@ def redeem_code_for_user(user_id, code):
     now = current_time()
 
     with get_connection() as conn:
-        # BEGIN IMMEDIATE prevents concurrent redemptions from
-        # exceeding the code's maximum user limit.
         conn.execute("BEGIN IMMEDIATE")
 
         user = conn.execute("""
@@ -785,27 +795,22 @@ def redeem_code_for_user(user_id, code):
 
         if code_row["expires_at"]:
             try:
-                expiry = datetime.fromisoformat(
-                    code_row["expires_at"]
-                )
+                expiry = datetime.fromisoformat(code_row["expires_at"])
 
-                if datetime.now() >= expiry:
+                # Keep comparisons compatible with timezone-aware dates.
+                now_dt = datetime.now(expiry.tzinfo) if expiry.tzinfo else datetime.now()
+
+                if now_dt >= expiry:
                     conn.execute("""
                         UPDATE redeem_codes
                         SET is_active = 0
                         WHERE code = ?
                     """, (code,))
 
-                    return {
-                        "success": False,
-                        "reason": "expired_code"
-                    }
+                    return {"success": False, "reason": "expired_code"}
 
             except ValueError:
-                return {
-                    "success": False,
-                    "reason": "invalid_expiry"
-                }
+                return {"success": False, "reason": "invalid_expiry"}
 
         already_redeemed = conn.execute("""
             SELECT 1
@@ -815,10 +820,7 @@ def redeem_code_for_user(user_id, code):
         """, (code, user_id)).fetchone()
 
         if already_redeemed:
-            return {
-                "success": False,
-                "reason": "already_redeemed"
-            }
+            return {"success": False, "reason": "already_redeemed"}
 
         redeemed_count = conn.execute("""
             SELECT COUNT(*) AS total
@@ -833,10 +835,7 @@ def redeem_code_for_user(user_id, code):
                 WHERE code = ?
             """, (code,))
 
-            return {
-                "success": False,
-                "reason": "limit_reached"
-            }
+            return {"success": False, "reason": "limit_reached"}
 
         amount = code_row["reward_coins"]
 
@@ -850,7 +849,7 @@ def redeem_code_for_user(user_id, code):
         """, (
             code,
             user_id,
-            now
+            now,
         ))
 
         conn.execute("""
@@ -863,7 +862,7 @@ def redeem_code_for_user(user_id, code):
             amount,
             amount,
             now,
-            user_id
+            user_id,
         ))
 
         conn.execute("""
@@ -879,18 +878,16 @@ def redeem_code_for_user(user_id, code):
             user_id,
             amount,
             f"Redeemed code: {code}",
-            now
+            now,
         ))
-
-        new_balance = user["coins_balance"] + amount
 
         return {
             "success": True,
             "code": code,
             "reward_coins": amount,
-            "coins_balance": new_balance,
+            "coins_balance": user["coins_balance"] + amount,
             "redeemed_count": redeemed_count + 1,
-            "max_users": code_row["max_users"]
+            "max_users": code_row["max_users"],
         }
 
 
@@ -949,13 +946,14 @@ def update_redeem_settings(**settings):
         "auto_enabled",
         "channel_id",
         "post_time",
+        "repost_interval_hours",
         "reward_coins",
         "max_users",
         "expiry_hours",
         "active_code",
         "active_message_id",
         "last_post_date",
-        "last_delete_date"
+        "last_delete_date",
     }
 
     updates = {
@@ -973,7 +971,12 @@ def update_redeem_settings(**settings):
         except (ValueError, TypeError):
             return False
 
-    for key in ("reward_coins", "max_users", "expiry_hours"):
+    for key in (
+        "reward_coins",
+        "max_users",
+        "expiry_hours",
+        "repost_interval_hours",
+    ):
         if key in updates:
             value = updates[key]
 
@@ -987,21 +990,37 @@ def update_redeem_settings(**settings):
     if "auto_enabled" in updates:
         updates["auto_enabled"] = int(bool(updates["auto_enabled"]))
 
+    if "channel_id" in updates and updates["channel_id"] is not None:
+        try:
+            updates["channel_id"] = int(updates["channel_id"])
+        except (ValueError, TypeError):
+            return False
+
+    if (
+        "active_message_id" in updates
+        and updates["active_message_id"] is not None
+    ):
+        try:
+            updates["active_message_id"] = int(
+                updates["active_message_id"]
+            )
+        except (ValueError, TypeError):
+            return False
+
     updates["updated_at"] = current_time()
 
     columns = ", ".join(
         f"{column} = ?" for column in updates
     )
-
     values = list(updates.values())
 
     with get_connection() as conn:
-        conn.execute(
+        cursor = conn.execute(
             f"UPDATE redeem_settings SET {columns} WHERE id = 1",
-            values
+            values,
         )
 
-    return True
+        return cursor.rowcount > 0
 
 
 def generate_redeem_expiry(hours):
@@ -1043,7 +1062,7 @@ def add_links(urls, admin_id):
             """, (
                 url,
                 admin_id,
-                now
+                now,
             ))
 
             added_ids.append(cursor.lastrowid)
@@ -1105,7 +1124,7 @@ def has_unlocked_link(user_id, link_id):
               AND link_id = ?
         """, (
             user_id,
-            link_id
+            link_id,
         )).fetchone()
 
         return row is not None
@@ -1125,7 +1144,7 @@ def unlock_link(user_id, link_id):
         if not user:
             return {
                 "success": False,
-                "reason": "user_not_verified"
+                "reason": "user_not_verified",
             }
 
         link = conn.execute("""
@@ -1138,7 +1157,7 @@ def unlock_link(user_id, link_id):
         if not link:
             return {
                 "success": False,
-                "reason": "link_not_found"
+                "reason": "link_not_found",
             }
 
         already_unlocked = conn.execute("""
@@ -1148,7 +1167,7 @@ def unlock_link(user_id, link_id):
               AND link_id = ?
         """, (
             user_id,
-            link_id
+            link_id,
         )).fetchone()
 
         if already_unlocked:
@@ -1156,7 +1175,7 @@ def unlock_link(user_id, link_id):
                 "success": True,
                 "already_unlocked": True,
                 "url": link["url"],
-                "balance": user["coins_balance"]
+                "balance": user["coins_balance"],
             }
 
         updated = conn.execute("""
@@ -1172,13 +1191,13 @@ def unlock_link(user_id, link_id):
             LINK_UNLOCK_COST,
             now,
             user_id,
-            LINK_UNLOCK_COST
+            LINK_UNLOCK_COST,
         ))
 
         if updated.rowcount != 1:
             return {
                 "success": False,
-                "reason": "insufficient_coins"
+                "reason": "insufficient_coins",
             }
 
         conn.execute("""
@@ -1191,7 +1210,7 @@ def unlock_link(user_id, link_id):
         """, (
             user_id,
             link_id,
-            now
+            now,
         ))
 
         conn.execute("""
@@ -1207,14 +1226,14 @@ def unlock_link(user_id, link_id):
             user_id,
             -LINK_UNLOCK_COST,
             f"Unlocked link ID {link_id}",
-            now
+            now,
         ))
 
         return {
             "success": True,
             "already_unlocked": False,
             "url": link["url"],
-            "balance": user["coins_balance"] - LINK_UNLOCK_COST
+            "balance": user["coins_balance"] - LINK_UNLOCK_COST,
         }
 
 
