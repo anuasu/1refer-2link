@@ -26,7 +26,7 @@ def show_links(chat_id, user_id, notice=None):
     links = get_active_links()
 
     if not links:
-        bot.send_message(chat_id, "📭 Abhi koi link available nahi hai.")
+        bot.send_message(chat_id, "📭 No links are available at the moment.")
         return
 
     next_link = None
@@ -44,7 +44,7 @@ def show_links(chat_id, user_id, notice=None):
     )
 
     if next_link is None:
-        text += "\n🎉 Aapne saare available links unlock kar liye hain!"
+        text += "\n🎉 You have unlocked all available links!"
         if notice:
             text = notice + "\n\n" + text
         bot.send_message(chat_id, text, parse_mode="HTML")
@@ -53,7 +53,7 @@ def show_links(chat_id, user_id, notice=None):
     text += (
         f"📍 Next Link: <b>#{next_number}</b>\n"
         f"💰 Unlock Cost: <b>{LINK_UNLOCK_COST} Coin</b>\n\n"
-        "Neeche button dabakar next link unlock karo."
+       "Tap the button below to unlock the next link."
     )
 
     if notice:
@@ -74,13 +74,13 @@ def open_links(message):
     user_id = message.from_user.id
 
     if not get_user(user_id):
-        bot.reply_to(message, "Pehle /start karke account register karo.")
+        bot.reply_to(message,"Please use /start first to register your account.")
         return
 
     if not check_membership(user_id):
         bot.send_message(
             message.chat.id,
-            "🔐 Open Links use karne ke liye group aur channel dono join karo.",
+           "🔐 Please join both the group and the channel to access Open Links.",
             reply_markup=join_keyboard()
         )
         return
@@ -88,7 +88,7 @@ def open_links(message):
     verification = complete_verification(user_id)
 
     if not verification["success"]:
-        bot.send_message(message.chat.id, "Verification complete nahi hua. Dobara /start karo.")
+        bot.send_message(message.chat.id, "Verification is not complete please try /start again")
         return
 
     show_links(message.chat.id, user_id)
@@ -109,14 +109,14 @@ def unlock_link_callback(call):
     user_id = call.from_user.id
 
     if not get_user(user_id):
-        bot.answer_callback_query(call.id, "Pehle /start karo!", show_alert=True)
+        bot.answer_callback_query(call.id, "Please use /start first!", show_alert=True)
         return
 
     if not check_membership(user_id):
-        bot.answer_callback_query(call.id, "Pehle group aur channel dono join karo!", show_alert=True)
+        bot.answer_callback_query(call.id, "Please join both the group and the channel first!", show_alert=True)
         bot.send_message(
             call.message.chat.id,
-            "🔐 Link unlock karne ke liye group aur channel dono join karo.",
+            "🔐 Please join both the group and the channel to unlock this link.",
             reply_markup=join_keyboard()
         )
         return
@@ -124,7 +124,7 @@ def unlock_link_callback(call):
     verification = complete_verification(user_id)
 
     if not verification["success"]:
-        bot.answer_callback_query(call.id, "Verification complete nahi hua!", show_alert=True)
+        bot.answer_callback_query(call.id, "Verification is not complete!", show_alert=True)
         return
 
     try:
@@ -139,18 +139,18 @@ def unlock_link_callback(call):
         reason = result.get("reason")
 
         if reason == "insufficient_coins":
-            error_message = f"Coins kam hain! Balance: {get_user(user_id)['coins_balance']}"
+            error_message = f"Insufficient coins! Balance: {get_user(user_id)['coins_balance']}"
         elif reason == "user_not_verified":
-            error_message = "Pehle verification complete karo!"
+            error_message = "Please complete the verification first!"
         else:
-            error_message = "Ye link available nahi hai."
+            error_message = "This link is not available."
 
         bot.answer_callback_query(call.id, error_message, show_alert=True)
         return
 
     bot.answer_callback_query(
         call.id,
-        "Pehle se unlocked hai!" if result["already_unlocked"] else "Link unlock ho gaya!"
+        "Already unlocked!" if result["already_unlocked"] else "Link unlocked successfully!"
     )
 
     links = get_active_links()
@@ -173,7 +173,7 @@ def unlock_link_callback(call):
         "✅ <b>Link Unlocked!</b>\n\n"
         + (f"📍 Link: <b>#{current_number}</b>\n" if current_number else "")
         + f"💰 Remaining Coins: <b>{result['balance']}</b>\n\n"
-        "Neeche button se link open karo.",
+       "Open the link using the button below.",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -181,7 +181,7 @@ def unlock_link_callback(call):
     show_links(
         call.message.chat.id,
         user_id,
-        notice=f"✅ Link #{current_number} unlock ho gaya!" if current_number else None
+        notice=f"✅ Link #{current_number} has been unlocked!" if current_number else None
     )
 
 
@@ -190,11 +190,11 @@ def back_to_links_callback(call):
     user_id = call.from_user.id
 
     if not get_user(user_id):
-        bot.answer_callback_query(call.id, "Pehle /start karo!", show_alert=True)
+        bot.answer_callback_query(call.id, "Please use /start first!", show_alert=True)
         return
 
     if not check_membership(user_id):
-        bot.answer_callback_query(call.id, "Pehle group aur channel join karo!", show_alert=True)
+        bot.answer_callback_query(call.id, "Please join the group and channel first!", show_alert=True)
         return
 
     bot.answer_callback_query(call.id)
