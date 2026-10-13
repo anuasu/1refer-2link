@@ -1,20 +1,21 @@
 import html
 
 from telebot import types
+
 from bot import bot
 
 from database import (
     get_user,
     get_global_stats,
     get_top_users,
-    complete_verification
+    complete_verification,
 )
 
 from config import (
     GROUP_ID,
     GROUP_INVITE_LINK,
     CHANNEL_ID,
-    CHANNEL_INVITE_LINK
+    CHANNEL_INVITE_LINK,
 )
 
 
@@ -34,7 +35,11 @@ def check_membership(user_id):
             user_id
         )
 
-        valid_statuses = ("member", "administrator", "creator")
+        valid_statuses = (
+            "member",
+            "administrator",
+            "creator",
+        )
 
         return (
             group_member.status in valid_statuses
@@ -66,7 +71,7 @@ def join_keyboard():
 
     keyboard.add(
         types.InlineKeyboardButton(
-            "✅ Check Join",
+            "✅ Check Membership",
             callback_data="check_join"
         )
     )
@@ -117,8 +122,10 @@ def show_statistics(message):
     if not check_membership(user_id):
         bot.send_message(
             message.chat.id,
-            "⚠️ Statistics dekhne ke liye pehle hamare "
-            "group aur channel join karo.",
+            (
+                "⚠️ Please join both our group and channel "
+                "to view statistics."
+            ),
             reply_markup=join_keyboard()
         )
         return
@@ -155,14 +162,15 @@ def show_top50(chat_id, message_id=None):
     if not users:
         text = (
             "🏆 <b>TOP 50 LEADERBOARD</b>\n\n"
-            "Abhi koi user leaderboard mein nahi hai."
+            "No users are currently available on the leaderboard."
         )
+
     else:
         lines = [
             "🏆 <b>TOP 50 LEADERBOARD</b>",
             "",
-            "📊 Ranking: Highest current coin balance",
-            ""
+            "📊 Ranking: Highest Current Coin Balance",
+            "",
         ]
 
         for rank, user in enumerate(users, start=1):
@@ -171,6 +179,7 @@ def show_top50(chat_id, message_id=None):
             )
 
             username_value = user.get("username") or ""
+
             username = (
                 "@" + html.escape(username_value.lstrip("@"))
                 if username_value.strip()
@@ -263,7 +272,10 @@ def refresh_statistics_callback(call):
         if not check_membership(user_id):
             bot.send_message(
                 call.message.chat.id,
-                "⚠️ Pehle group aur channel join karo.",
+                (
+                    "⚠️ Please join both our group and channel "
+                    "to continue."
+                ),
                 reply_markup=join_keyboard()
             )
             return
@@ -308,7 +320,10 @@ def top50_callback(call):
         if not check_membership(call.from_user.id):
             bot.send_message(
                 call.message.chat.id,
-                "⚠️ Pehle group aur channel join karo.",
+                (
+                    "⚠️ Please join both our group and channel "
+                    "to continue."
+                ),
                 reply_markup=join_keyboard()
             )
             return
@@ -338,7 +353,10 @@ def back_to_statistics_callback(call):
         if not check_membership(call.from_user.id):
             bot.send_message(
                 call.message.chat.id,
-                "⚠️ Pehle group aur channel join karo.",
+                (
+                    "⚠️ Please join both our group and channel "
+                    "to continue."
+                ),
                 reply_markup=join_keyboard()
             )
             return
@@ -390,7 +408,7 @@ def check_join_callback(call):
         else:
             bot.answer_callback_query(
                 call.id,
-                "❌ Pehle group aur channel dono join karo.",
+                "❌ Please join both the group and channel.",
                 show_alert=True
             )
 
