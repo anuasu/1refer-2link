@@ -111,6 +111,7 @@ def init_db():
                 auto_enabled INTEGER DEFAULT 0,
                 channel_id INTEGER,
                 post_time TEXT DEFAULT '11:00',
+                post_date TEXT,
                 repost_interval_hours INTEGER DEFAULT 24,
                 reward_coins INTEGER DEFAULT 10,
                 max_users INTEGER DEFAULT 100,
@@ -141,21 +142,24 @@ def init_db():
                 ON redeem_redemptions(user_id);
         """)
 
-        # -------------------------------------------------
-        # SAFE MIGRATION FOR EXISTING DATABASES
-        # -------------------------------------------------
-
-        columns = {
+        # Safe migration for existing databases.
+        settings_columns = {
             row["name"]
             for row in conn.execute(
                 "PRAGMA table_info(redeem_settings)"
             ).fetchall()
         }
 
-        if "repost_interval_hours" not in columns:
+        if "repost_interval_hours" not in settings_columns:
             conn.execute("""
                 ALTER TABLE redeem_settings
                 ADD COLUMN repost_interval_hours INTEGER DEFAULT 24
+            """)
+
+        if "post_date" not in settings_columns:
+            conn.execute("""
+                ALTER TABLE redeem_settings
+                ADD COLUMN post_date TEXT
             """)
 
         conn.execute("""
@@ -163,13 +167,14 @@ def init_db():
                 id,
                 auto_enabled,
                 post_time,
+                post_date,
                 repost_interval_hours,
                 reward_coins,
                 max_users,
                 expiry_hours,
                 updated_at
             )
-            VALUES (1, 0, '11:00', 24, 10, 100, 24, ?)
+            VALUES (1, 0, '11:00', NULL, 24, 10, 100, 24, ?)
         """, (current_time(),))
 
 
@@ -222,17 +227,10 @@ def register_user(
 
         conn.execute("""
             INSERT INTO users (
-                user_id,
-                first_name,
-                username,
-                referred_by,
-                is_verified,
-                welcome_bonus_claimed,
-                coins_balance,
-                total_coins_earned,
-                total_coins_spent,
-                created_at,
-                updated_at
+                user_id, first_name, username, referred_by,
+                is_verified, welcome_bonus_claimed,
+                coins_balance, total_coins_earned,
+                total_coins_spent, created_at, updated_at
             )
             VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, ?, ?)
         """, (
@@ -247,49 +245,37 @@ def register_user(
         if referred_by is not None:
             conn.execute("""
                 INSERT OR IGNORE INTO referrals (
-                    referred_user_id,
-                    referrer_id,
-                    rewarded,
-                    created_at
+                    referred_user_id, referrer_id, rewarded, created_at
                 )
                 VALUES (?, ?, 0, ?)
-            """, (
-                user_id,
-                referred_by,
-                now,
-            ))
+            """, (user_id, referred_by, now))
 
         return True
 
 
 def get_user(user_id):
     with get_connection() as conn:
-        row = conn.execute("""
-            SELECT *
-            FROM users
-            WHERE user_id = ?
-        """, (user_id,)).fetchone()
-
+        row = conn.execute(
+            "SELECT * FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
         return dict(row) if row else None
 
 
 def user_exists(user_id):
     with get_connection() as conn:
-        return conn.execute("""
-            SELECT 1
-            FROM users
-            WHERE user_id = ?
-        """, (user_id,)).fetchone() is not None
+        return conn.execute(
+            "SELECT 1 FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone() is not None
 
 
 def is_user_verified(user_id):
     with get_connection() as conn:
-        row = conn.execute("""
-            SELECT is_verified
-            FROM users
-            WHERE user_id = ?
-        """, (user_id,)).fetchone()
-
+        row = conn.execute(
+            "SELECT is_verified FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
         return bool(row["is_verified"]) if row else False
 
 
@@ -297,12 +283,7 @@ def is_user_verified(user_id):
 # COIN MANAGEMENT
 # =========================================================
 
-def add_coins(
-    user_id,
-    amount,
-    transaction_type,
-    description="",
-):
+def add_coins(user_id, amount, transaction_type, description=""):
     if (
         not isinstance(amount, int)
         or isinstance(amount, bool)
@@ -313,11 +294,10 @@ def add_coins(
     now = current_time()
 
     with get_connection() as conn:
-        user = conn.execute("""
-            SELECT user_id
-            FROM users
-            WHERE user_id = ?
-        """, (user_id,)).fetchone()
+        user = conn.execute(
+            "SELECT user_id FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
 
         if not user:
             return False
@@ -328,29 +308,14 @@ def add_coins(
                 total_coins_earned = total_coins_earned + ?,
                 updated_at = ?
             WHERE user_id = ?
-        """, (
-            amount,
-            amount,
-            now,
-            user_id,
-        ))
+        """, (amount, amount, now, user_id))
 
         conn.execute("""
             INSERT INTO coin_transactions (
-                user_id,
-                amount,
-                transaction_type,
-                description,
-                created_at
+                user_id, amount, transaction_type, description, created_at
             )
             VALUES (?, ?, ?, ?, ?)
-        """, (
-            user_id,
-            amount,
-            transaction_type,
-            description,
-            now,
-        ))
+        """, (user_id, amount, transaction_type, description, now))
 
         return True
 
@@ -363,21 +328,16 @@ def reward_pending_referrals(conn, referrer_id, now):
     referrer = conn.execute("""
         SELECT user_id, first_name, username
         FROM users
-        WHERE user_id = ?
-          AND is_verified = 1
+        WHERE user_id = ? AND is_verified = 1
     """, (referrer_id,)).fetchone()
 
     if not referrer:
         return []
 
     pending = conn.execute("""
-        SELECT
-            r.referred_user_id,
-            u.first_name,
-            u.username
+        SELECT r.referred_user_id, u.first_name, u.username
         FROM referrals r
-        JOIN users u
-          ON u.user_id = r.referred_user_id
+        JOIN users u ON u.user_id = r.referred_user_id
         WHERE r.referrer_id = ?
           AND r.rewarded = 0
           AND u.is_verified = 1
@@ -398,10 +358,7 @@ def reward_pending_referrals(conn, referrer_id, now):
             WHERE referred_user_id = ?
               AND referrer_id = ?
               AND rewarded = 0
-        """, (
-            referred_user_id,
-            referrer_id,
-        ))
+        """, (referred_user_id, referrer_id))
 
         if updated.rowcount != 1:
             continue
@@ -412,20 +369,11 @@ def reward_pending_referrals(conn, referrer_id, now):
                 total_coins_earned = total_coins_earned + ?,
                 updated_at = ?
             WHERE user_id = ?
-        """, (
-            REFERRAL_REWARD,
-            REFERRAL_REWARD,
-            now,
-            referrer_id,
-        ))
+        """, (REFERRAL_REWARD, REFERRAL_REWARD, now, referrer_id))
 
         conn.execute("""
             INSERT INTO coin_transactions (
-                user_id,
-                amount,
-                transaction_type,
-                description,
-                created_at
+                user_id, amount, transaction_type, description, created_at
             )
             VALUES (?, ?, 'referral_reward', ?, ?)
         """, (
@@ -436,9 +384,7 @@ def reward_pending_referrals(conn, referrer_id, now):
         ))
 
         balance = conn.execute("""
-            SELECT coins_balance
-            FROM users
-            WHERE user_id = ?
+            SELECT coins_balance FROM users WHERE user_id = ?
         """, (referrer_id,)).fetchone()["coins_balance"]
 
         newly_rewarded.append({
@@ -469,20 +415,17 @@ def complete_verification(user_id):
     }
 
     with get_connection() as conn:
-        user = conn.execute("""
-            SELECT *
-            FROM users
-            WHERE user_id = ?
-        """, (user_id,)).fetchone()
+        user = conn.execute(
+            "SELECT * FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
 
         if not user:
             return result
 
         if not user["is_verified"]:
             conn.execute("""
-                UPDATE users
-                SET is_verified = 1,
-                    updated_at = ?
+                UPDATE users SET is_verified = 1, updated_at = ?
                 WHERE user_id = ?
             """, (now, user_id))
 
@@ -495,40 +438,23 @@ def complete_verification(user_id):
                     updated_at = ?
                 WHERE user_id = ?
                   AND welcome_bonus_claimed = 0
-            """, (
-                WELCOME_BONUS,
-                WELCOME_BONUS,
-                now,
-                user_id,
-            ))
+            """, (WELCOME_BONUS, WELCOME_BONUS, now, user_id))
 
             if updated.rowcount == 1:
                 conn.execute("""
                     INSERT INTO coin_transactions (
-                        user_id,
-                        amount,
-                        transaction_type,
-                        description,
-                        created_at
+                        user_id, amount, transaction_type,
+                        description, created_at
                     )
                     VALUES (?, ?, 'welcome_bonus', 'Welcome bonus', ?)
-                """, (
-                    user_id,
-                    WELCOME_BONUS,
-                    now,
-                ))
+                """, (user_id, WELCOME_BONUS, now))
 
                 result["welcome_bonus"] = WELCOME_BONUS
 
         referral = conn.execute("""
-            SELECT
-                r.referrer_id,
-                r.rewarded,
-                u.first_name,
-                u.username
+            SELECT r.referrer_id, r.rewarded, u.first_name, u.username
             FROM referrals r
-            JOIN users u
-              ON u.user_id = r.referrer_id
+            JOIN users u ON u.user_id = r.referrer_id
             WHERE r.referred_user_id = ?
         """, (user_id,)).fetchone()
 
@@ -540,24 +466,16 @@ def complete_verification(user_id):
             if not referral["rewarded"]:
                 result["newly_rewarded_referrals"].extend(
                     reward_pending_referrals(
-                        conn,
-                        referral["referrer_id"],
-                        now,
+                        conn, referral["referrer_id"], now
                     )
                 )
 
         result["newly_rewarded_referrals"].extend(
-            reward_pending_referrals(
-                conn,
-                user_id,
-                now,
-            )
+            reward_pending_referrals(conn, user_id, now)
         )
 
         balance = conn.execute("""
-            SELECT coins_balance
-            FROM users
-            WHERE user_id = ?
+            SELECT coins_balance FROM users WHERE user_id = ?
         """, (user_id,)).fetchone()
 
         result["coins_balance"] = balance["coins_balance"]
@@ -573,10 +491,7 @@ def complete_verification(user_id):
 def get_user_stats(user_id):
     with get_connection() as conn:
         row = conn.execute("""
-            SELECT
-                coins_balance,
-                total_coins_earned,
-                total_coins_spent
+            SELECT coins_balance, total_coins_earned, total_coins_spent
             FROM users
             WHERE user_id = ?
         """, (user_id,)).fetchone()
@@ -592,8 +507,7 @@ def get_user_stats(user_id):
         referral_count = conn.execute("""
             SELECT COUNT(*) AS total
             FROM referrals
-            WHERE referrer_id = ?
-              AND rewarded = 1
+            WHERE referrer_id = ? AND rewarded = 1
         """, (user_id,)).fetchone()["total"]
 
         return {
@@ -606,21 +520,17 @@ def get_user_stats(user_id):
 
 def get_all_user_ids():
     with get_connection() as conn:
-        rows = conn.execute("""
-            SELECT user_id
-            FROM users
-            ORDER BY user_id
-        """).fetchall()
-
+        rows = conn.execute(
+            "SELECT user_id FROM users ORDER BY user_id"
+        ).fetchall()
         return [row["user_id"] for row in rows]
 
 
 def get_global_stats():
     with get_connection() as conn:
-        total_users = conn.execute("""
-            SELECT COUNT(*) AS total
-            FROM users
-        """).fetchone()["total"]
+        total_users = conn.execute(
+            "SELECT COUNT(*) AS total FROM users"
+        ).fetchone()["total"]
 
         total_referrals = conn.execute("""
             SELECT COUNT(*) AS total
@@ -706,16 +616,9 @@ def create_redeem_code(
         try:
             conn.execute("""
                 INSERT INTO redeem_codes (
-                    code,
-                    reward_coins,
-                    max_users,
-                    expires_at,
-                    created_by,
-                    is_active,
-                    is_auto,
-                    channel_id,
-                    message_id,
-                    created_at
+                    code, reward_coins, max_users, expires_at,
+                    created_by, is_active, is_auto, channel_id,
+                    message_id, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             """, (
@@ -729,7 +632,6 @@ def create_redeem_code(
                 message_id,
                 now,
             ))
-
             return True
 
         except sqlite3.IntegrityError:
@@ -744,8 +646,7 @@ def get_redeem_code(code):
 
     with get_connection() as conn:
         row = conn.execute("""
-            SELECT
-                c.*,
+            SELECT c.*,
                 (
                     SELECT COUNT(*)
                     FROM redeem_redemptions r
@@ -782,9 +683,7 @@ def redeem_code_for_user(user_id, code):
             return {"success": False, "reason": "user_not_found"}
 
         code_row = conn.execute("""
-            SELECT *
-            FROM redeem_codes
-            WHERE code = ?
+            SELECT * FROM redeem_codes WHERE code = ?
         """, (code,)).fetchone()
 
         if not code_row:
@@ -796,9 +695,11 @@ def redeem_code_for_user(user_id, code):
         if code_row["expires_at"]:
             try:
                 expiry = datetime.fromisoformat(code_row["expires_at"])
-
-                # Keep comparisons compatible with timezone-aware dates.
-                now_dt = datetime.now(expiry.tzinfo) if expiry.tzinfo else datetime.now()
+                now_dt = (
+                    datetime.now(expiry.tzinfo)
+                    if expiry.tzinfo
+                    else datetime.now()
+                )
 
                 if now_dt >= expiry:
                     conn.execute("""
@@ -806,7 +707,6 @@ def redeem_code_for_user(user_id, code):
                         SET is_active = 0
                         WHERE code = ?
                     """, (code,))
-
                     return {"success": False, "reason": "expired_code"}
 
             except ValueError:
@@ -815,8 +715,7 @@ def redeem_code_for_user(user_id, code):
         already_redeemed = conn.execute("""
             SELECT 1
             FROM redeem_redemptions
-            WHERE code = ?
-              AND user_id = ?
+            WHERE code = ? AND user_id = ?
         """, (code, user_id)).fetchone()
 
         if already_redeemed:
@@ -830,27 +729,16 @@ def redeem_code_for_user(user_id, code):
 
         if redeemed_count >= code_row["max_users"]:
             conn.execute("""
-                UPDATE redeem_codes
-                SET is_active = 0
-                WHERE code = ?
+                UPDATE redeem_codes SET is_active = 0 WHERE code = ?
             """, (code,))
-
             return {"success": False, "reason": "limit_reached"}
 
         amount = code_row["reward_coins"]
 
         conn.execute("""
-            INSERT INTO redeem_redemptions (
-                code,
-                user_id,
-                redeemed_at
-            )
+            INSERT INTO redeem_redemptions (code, user_id, redeemed_at)
             VALUES (?, ?, ?)
-        """, (
-            code,
-            user_id,
-            now,
-        ))
+        """, (code, user_id, now))
 
         conn.execute("""
             UPDATE users
@@ -858,28 +746,14 @@ def redeem_code_for_user(user_id, code):
                 total_coins_earned = total_coins_earned + ?,
                 updated_at = ?
             WHERE user_id = ?
-        """, (
-            amount,
-            amount,
-            now,
-            user_id,
-        ))
+        """, (amount, amount, now, user_id))
 
         conn.execute("""
             INSERT INTO coin_transactions (
-                user_id,
-                amount,
-                transaction_type,
-                description,
-                created_at
+                user_id, amount, transaction_type, description, created_at
             )
             VALUES (?, ?, 'redeem_code', ?, ?)
-        """, (
-            user_id,
-            amount,
-            f"Redeemed code: {code}",
-            now,
-        ))
+        """, (user_id, amount, f"Redeemed code: {code}", now))
 
         return {
             "success": True,
@@ -899,8 +773,7 @@ def deactivate_redeem_code(code):
         cursor = conn.execute("""
             UPDATE redeem_codes
             SET is_active = 0
-            WHERE code = ?
-              AND is_active = 1
+            WHERE code = ? AND is_active = 1
         """, (code.strip().upper(),))
 
         return cursor.rowcount > 0
@@ -911,8 +784,7 @@ def get_redeem_codes(limit=20):
 
     with get_connection() as conn:
         rows = conn.execute("""
-            SELECT
-                c.*,
+            SELECT c.*,
                 (
                     SELECT COUNT(*)
                     FROM redeem_redemptions r
@@ -933,9 +805,7 @@ def get_redeem_codes(limit=20):
 def get_redeem_settings():
     with get_connection() as conn:
         row = conn.execute("""
-            SELECT *
-            FROM redeem_settings
-            WHERE id = 1
+            SELECT * FROM redeem_settings WHERE id = 1
         """).fetchone()
 
         return dict(row) if row else None
@@ -946,6 +816,7 @@ def update_redeem_settings(**settings):
         "auto_enabled",
         "channel_id",
         "post_time",
+        "post_date",
         "repost_interval_hours",
         "reward_coins",
         "max_users",
@@ -971,6 +842,12 @@ def update_redeem_settings(**settings):
         except (ValueError, TypeError):
             return False
 
+    if "post_date" in updates and updates["post_date"] is not None:
+        try:
+            datetime.strptime(updates["post_date"], "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return False
+
     for key in (
         "reward_coins",
         "max_users",
@@ -990,22 +867,12 @@ def update_redeem_settings(**settings):
     if "auto_enabled" in updates:
         updates["auto_enabled"] = int(bool(updates["auto_enabled"]))
 
-    if "channel_id" in updates and updates["channel_id"] is not None:
-        try:
-            updates["channel_id"] = int(updates["channel_id"])
-        except (ValueError, TypeError):
-            return False
-
-    if (
-        "active_message_id" in updates
-        and updates["active_message_id"] is not None
-    ):
-        try:
-            updates["active_message_id"] = int(
-                updates["active_message_id"]
-            )
-        except (ValueError, TypeError):
-            return False
+    for key in ("channel_id", "active_message_id"):
+        if key in updates and updates[key] is not None:
+            try:
+                updates[key] = int(updates[key])
+            except (TypeError, ValueError):
+                return False
 
     updates["updated_at"] = current_time()
 
@@ -1019,7 +886,6 @@ def update_redeem_settings(**settings):
             f"UPDATE redeem_settings SET {columns} WHERE id = 1",
             values,
         )
-
         return cursor.rowcount > 0
 
 
@@ -1052,18 +918,9 @@ def add_links(urls, admin_id):
                 continue
 
             cursor = conn.execute("""
-                INSERT INTO links (
-                    url,
-                    added_by,
-                    is_active,
-                    created_at
-                )
+                INSERT INTO links (url, added_by, is_active, created_at)
                 VALUES (?, ?, 1, ?)
-            """, (
-                url,
-                admin_id,
-                now,
-            ))
+            """, (url, admin_id, now))
 
             added_ids.append(cursor.lastrowid)
 
@@ -1085,10 +942,8 @@ def get_active_links():
 def get_link(link_id):
     with get_connection() as conn:
         row = conn.execute("""
-            SELECT *
-            FROM links
-            WHERE id = ?
-              AND is_active = 1
+            SELECT * FROM links
+            WHERE id = ? AND is_active = 1
         """, (link_id,)).fetchone()
 
         return dict(row) if row else None
@@ -1108,8 +963,7 @@ def delete_link(link_id):
         cursor = conn.execute("""
             UPDATE links
             SET is_active = 0
-            WHERE id = ?
-              AND is_active = 1
+            WHERE id = ? AND is_active = 1
         """, (link_id,))
 
         return cursor.rowcount > 0
@@ -1120,12 +974,8 @@ def has_unlocked_link(user_id, link_id):
         row = conn.execute("""
             SELECT 1
             FROM unlocked_links
-            WHERE user_id = ?
-              AND link_id = ?
-        """, (
-            user_id,
-            link_id,
-        )).fetchone()
+            WHERE user_id = ? AND link_id = ?
+        """, (user_id, link_id)).fetchone()
 
         return row is not None
 
@@ -1137,8 +987,7 @@ def unlock_link(user_id, link_id):
         user = conn.execute("""
             SELECT coins_balance
             FROM users
-            WHERE user_id = ?
-              AND is_verified = 1
+            WHERE user_id = ? AND is_verified = 1
         """, (user_id,)).fetchone()
 
         if not user:
@@ -1150,8 +999,7 @@ def unlock_link(user_id, link_id):
         link = conn.execute("""
             SELECT id, url
             FROM links
-            WHERE id = ?
-              AND is_active = 1
+            WHERE id = ? AND is_active = 1
         """, (link_id,)).fetchone()
 
         if not link:
@@ -1163,12 +1011,8 @@ def unlock_link(user_id, link_id):
         already_unlocked = conn.execute("""
             SELECT 1
             FROM unlocked_links
-            WHERE user_id = ?
-              AND link_id = ?
-        """, (
-            user_id,
-            link_id,
-        )).fetchone()
+            WHERE user_id = ? AND link_id = ?
+        """, (user_id, link_id)).fetchone()
 
         if already_unlocked:
             return {
@@ -1201,25 +1045,13 @@ def unlock_link(user_id, link_id):
             }
 
         conn.execute("""
-            INSERT INTO unlocked_links (
-                user_id,
-                link_id,
-                unlocked_at
-            )
+            INSERT INTO unlocked_links (user_id, link_id, unlocked_at)
             VALUES (?, ?, ?)
-        """, (
-            user_id,
-            link_id,
-            now,
-        ))
+        """, (user_id, link_id, now))
 
         conn.execute("""
             INSERT INTO coin_transactions (
-                user_id,
-                amount,
-                transaction_type,
-                description,
-                created_at
+                user_id, amount, transaction_type, description, created_at
             )
             VALUES (?, ?, 'link_unlock', ?, ?)
         """, (
@@ -1240,13 +1072,9 @@ def unlock_link(user_id, link_id):
 def get_user_unlocked_links(user_id):
     with get_connection() as conn:
         rows = conn.execute("""
-            SELECT
-                links.id,
-                links.url,
-                unlocked_links.unlocked_at
+            SELECT links.id, links.url, unlocked_links.unlocked_at
             FROM unlocked_links
-            JOIN links
-              ON links.id = unlocked_links.link_id
+            JOIN links ON links.id = unlocked_links.link_id
             WHERE unlocked_links.user_id = ?
             ORDER BY unlocked_links.unlocked_at DESC
         """, (user_id,)).fetchall()
