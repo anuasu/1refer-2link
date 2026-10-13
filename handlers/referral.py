@@ -84,11 +84,7 @@ def show_referral_info(message):
         return
 
     if not user.get("is_verified"):
-        finish_verification(
-            message,
-            user_id,
-            message.from_user.first_name or "User"
-        )
+        finish_verification(message)
         return
 
     stats = get_user_stats(user_id)
