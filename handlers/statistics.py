@@ -210,7 +210,7 @@ def show_top50(chat_id, message_id=None):
             callback_data="top50_leaderboard"
         ),
         types.InlineKeyboardButton(
-            "🔙 Back to Statistics",
+            "🔙 Back",
             callback_data="back_to_statistics"
         )
     )
