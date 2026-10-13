@@ -118,10 +118,9 @@ def send_join_message(chat_id):
     bot.send_message(
         chat_id,
         (
-            "👋 <b>Welcome!</b>\n\n"
-            "Bot use karne ke liye hamara group aur channel "
-            "dono join karo.\n\n"
-            "Join karne ke baad <b>✅ Check Join</b> dabao."
+           "👋 <b>Welcome! 🤫</b>\n\n"
+"To use this bot, please join both our group and channel.\n\n"
+"After joining, tap <b>Check Join to continue. ✅</b>"
         ),
         parse_mode="HTML",
         reply_markup=join_keyboard()
@@ -153,11 +152,11 @@ def get_referrer_name(result):
 
 def notify_referred_user(user_id, result):
     """
-    Referral se join karne wale user ko referrer ki
-    username-first information bhejta hai.
+    Sends a notification to the referred user
+    containing the referrer's information.
 
-    Notification welcome bonus pehli baar credit hone
-    par bheja jata hai.
+    The notification is sent when the welcome
+    bonus is credited for the first time.
     """
 
     welcome_bonus = result.get("welcome_bonus", 0)
@@ -300,12 +299,12 @@ def send_welcome(chat_id, first_name):
     bot.send_message(
         chat_id,
         (
-            f"🎉 <b>Welcome, {safe_name}!</b>\n\n"
-            f"🎁 Welcome Bonus: <b>+{WELCOME_BONUS} coins</b>\n"
-            f"👥 Referral Reward: <b>{REFERRAL_REWARD} coins</b>\n\n"
-            "🪙 Apna balance dekhne ke liye "
-            "<b>👤 Profile</b> par click karo.\n\n"
-            "Neeche se option select karo. 👇"
+           f"🎉 <b>Welcome, {safe_name}!</b>\n\n"
+f"🎁 Welcome Bonus: <b>+{WELCOME_BONUS} coins</b>\n"
+f"👥 Your Referral Reward: <b>{REFERRAL_REWARD} coins</b>\n\n"
+"🪙 To check your balance, click on "
+"<b>👤 Profile</b>.\n\n"
+"Select an option from the menu below. 👇"
         ),
         parse_mode="HTML",
         reply_markup=main_menu()
@@ -322,7 +321,7 @@ def show_profile(chat_id, user_id):
     if not user:
         bot.send_message(
             chat_id,
-            "❌ Profile nahi mila. Please /start karo."
+            "❌ Profile not found. Please use /start to get started."
         )
         return
 
@@ -419,7 +418,7 @@ def finish_verification(message):
     if not result.get("success"):
         bot.send_message(
             message.chat.id,
-            "❌ Verification nahi ho paayi. Dobara try karo."
+            "❌ Verification failed. Please try again."
         )
         return
 
@@ -451,8 +450,8 @@ def finish_verification(message):
     bot.send_message(
         message.chat.id,
         (
-            "✅ Verification successful!\n\n"
-            "Neeche se option select karo. 👇"
+           "✅ Verification successful!\n\n"
+"Please select an option from the menu below. 👇"
         ),
         reply_markup=main_menu()
     )
@@ -519,8 +518,8 @@ def start_command(message):
         bot.send_message(
             message.chat.id,
             (
-                "❌ Verification nahi ho paayi. "
-                "Please /start dobara try karo."
+                "❌ Verification failed. "
+"Please try /start again."
             )
         )
         return
@@ -535,10 +534,10 @@ def start_command(message):
         bot.send_message(
             message.chat.id,
             (
-                "👋 <b>Welcome back!</b>\n\n"
-                "🪙 Apna balance check karne ke liye "
-                "<b>👤 Profile</b> dabao.\n\n"
-                "Neeche se option select karo. 👇"
+              "👋 <b>Welcome back!</b>\n\n"
+"🪙 To check your balance, tap "
+"<b>👤 Profile</b>.\n\n"
+"Please select an option from the menu below. 👇"
             ),
             parse_mode="HTML",
             reply_markup=main_menu()
@@ -583,7 +582,7 @@ def check_join_callback(call):
             call.message.chat.id,
             (
                 "🎉 Verification successful!\n\n"
-                "Neeche se option select karo. 👇"
+"Please select an option from the menu below. 👇"
             ),
             reply_markup=main_menu()
         )
@@ -591,6 +590,6 @@ def check_join_callback(call):
     else:
         bot.answer_callback_query(
             call.id,
-            "❌ Group aur channel dono join karo.",
+            "❌ Please join both the group and the channel.",
             show_alert=True
         )
