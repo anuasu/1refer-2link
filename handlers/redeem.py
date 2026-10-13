@@ -52,7 +52,7 @@ def redeem_inline_keyboard():
 
     keyboard.add(
         types.InlineKeyboardButton(
-            "🔄 Check Join",
+            "🔄 Check Membership",
             callback_data="redeem_check_join"
         )
     )
@@ -84,10 +84,10 @@ def is_member(user_id):
 def show_redeem_join_prompt(chat_id):
     bot.send_message(
         chat_id,
-        "🔒 <b>Join Required</b>\n\n"
-        "Redeem code use karne ke liye pehle required "
-        "group aur channel join karo.\n\n"
-        "Join karne ke baad <b>Check Join</b> dabao.",
+        "🔒 <b>Membership Required</b>\n\n"
+        "To use redeem codes, you must first join both "
+        "the required group and channel.\n\n"
+        "After joining, press <b>Check Membership</b>.",
         reply_markup=redeem_inline_keyboard(),
         parse_mode="HTML"
     )
@@ -111,7 +111,7 @@ def redeem_code_button(message):
     if not user:
         bot.reply_to(
             message,
-            "Pehle /start karo, phir redeem code use karna."
+            "Please use /start to register your account before redeeming a code."
         )
         return
 
@@ -125,10 +125,10 @@ def redeem_code_button(message):
     bot.send_message(
         message.chat.id,
         "🎁 <b>Redeem Code</b>\n\n"
-        "Apna redeem code bhejo.\n"
-        "Code enter karte hi reward tumhare existing "
-        "coin balance mein add ho jayega.\n\n"
-        "Cancel karne ke liye 🔙 Back dabao.",
+        "Please send your redeem code.\n"
+        "Once you enter a valid code, the reward will be "
+        "added to your existing coin balance.\n\n"
+        "Press 🔙 Back to cancel.",
         reply_markup=redeem_back_keyboard(),
         parse_mode="HTML"
     )
@@ -147,7 +147,7 @@ def redeem_check_join_callback(call):
     if not is_member(user_id):
         bot.answer_callback_query(
             call.id,
-            "Pehle dono required chats join karo.",
+            "Please join both required chats first.",
             show_alert=True
         )
         return
@@ -159,8 +159,8 @@ def redeem_check_join_callback(call):
 
     try:
         bot.edit_message_text(
-            "✅ Membership check successful!\n\n"
-            "Ab bot ke menu se 🎁 Redeem Code select karo.",
+            "✅ Membership verification successful!\n\n"
+            "Now select 🎁 Redeem Code from the bot menu.",
             call.message.chat.id,
             call.message.message_id
         )
@@ -190,13 +190,13 @@ def process_redeem_code(message):
 
         bot.send_message(
             message.chat.id,
-            "Redeem process cancelled.",
+            "The redemption process has been cancelled.",
             reply_markup=types.ReplyKeyboardRemove()
         )
 
         bot.send_message(
             message.chat.id,
-            "Menu ke liye /start use karo."
+            "Use /start to return to the main menu."
         )
         return
 
@@ -204,7 +204,7 @@ def process_redeem_code(message):
     if code_input.startswith("/"):
         bot.reply_to(
             message,
-            "Redeem code bhejo ya cancel karne ke liye 🔙 Back dabao."
+            "Please enter a redeem code or press 🔙 Back to cancel."
         )
         return
 
@@ -215,7 +215,7 @@ def process_redeem_code(message):
     if not code_input or len(code_input) > 100:
         bot.reply_to(
             message,
-            "❌ Invalid code. Sahi redeem code enter karo."
+            "❌ Invalid code. Please enter a valid redeem code."
         )
         return
 
@@ -230,14 +230,14 @@ def process_redeem_code(message):
         )
         bot.reply_to(
             message,
-            "⚠️ Redeem process mein error aaya. Thodi der baad try karo."
+            "⚠️ An error occurred while processing your redemption. Please try again later."
         )
         return
 
     if not isinstance(result, dict):
         bot.reply_to(
             message,
-            "❌ Code redeem nahi ho saka. Dobara try karo."
+            "❌ Unable to redeem the code. Please try again."
         )
         return
 
@@ -247,20 +247,20 @@ def process_redeem_code(message):
         reason = result.get("reason", "invalid_code")
 
         errors = {
-            "invalid_code": "❌ Ye redeem code exist nahi karta.",
-            "inactive_code": "❌ Ye redeem code inactive hai.",
-            "expired_code": "⌛ Is redeem code ki expiry ho chuki hai.",
-            "already_redeemed": "⚠️ Tum ye code pehle hi redeem kar chuke ho.",
-            "limit_reached": "❌ Is code ka redemption limit complete ho gaya.",
-            "user_not_found": "Pehle /start karke account register karo.",
-            "invalid_expiry": "⌛ Ye redeem code ab valid nahi hai.",
+            "invalid_code": "❌ This redeem code does not exist.",
+            "inactive_code": "❌ This redeem code is inactive.",
+            "expired_code": "⌛ This redeem code has expired.",
+            "already_redeemed": "⚠️ You have already redeemed this code.",
+            "limit_reached": "❌ The redemption limit for this code has been reached.",
+            "user_not_found": "Please use /start to register your account first.",
+            "invalid_expiry": "⌛ This redeem code is no longer valid.",
         }
 
         bot.reply_to(
             message,
             errors.get(
                 reason,
-                "❌ Code redeem nahi ho saka. Code check karke dobara try karo."
+                "❌ Unable to redeem the code. Please check the code and try again."
             )
         )
         return
@@ -276,10 +276,10 @@ def process_redeem_code(message):
 
     bot.send_message(
         message.chat.id,
-        "🎉 <b>Redeem Successful!</b>\n\n"
+        "🎉 <b>Redemption Successful!</b>\n\n"
         f"🎁 Reward: <b>+{html.escape(str(reward))} coins</b>\n"
-        "💰 Reward tumhare account mein add kar diya gaya hai.\n\n"
-        "Ab tum bot ke doosre features bhi use kar sakte ho.",
+        "💰 The reward has been added to your account.\n\n"
+        "You can now explore the other features of the bot.",
         reply_markup=types.ReplyKeyboardRemove(),
         parse_mode="HTML"
     )
