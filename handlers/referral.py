@@ -7,19 +7,23 @@ from bot import bot
 from config import (
     GROUP_INVITE_LINK,
     CHANNEL_INVITE_LINK,
-    REFERRAL_REWARD
+    REFERRAL_REWARD,
 )
 
 from database import (
     get_user,
-    get_user_stats
+    get_user_stats,
 )
 
 from handlers.start import (
     check_membership,
-    finish_verification
+    finish_verification,
 )
 
+
+# =========================================================
+# REFERRAL JOIN KEYBOARD
+# =========================================================
 
 def referral_join_keyboard():
     keyboard = types.InlineKeyboardMarkup()
@@ -40,13 +44,17 @@ def referral_join_keyboard():
 
     keyboard.row(
         types.InlineKeyboardButton(
-            "✅ Check Join",
+            "✅ Check Membership",
             callback_data="check_join"
         )
     )
 
     return keyboard
 
+
+# =========================================================
+# SHOW REFERRAL INFORMATION
+# =========================================================
 
 def show_referral_info(message):
     user_id = message.from_user.id
@@ -56,17 +64,20 @@ def show_referral_info(message):
     if not user:
         bot.reply_to(
             message,
-            "Pehle /start karke account register karo."
+            "Please register your account first by using /start."
         )
         return
 
     if not check_membership(user_id):
         bot.send_message(
             message.chat.id,
-            "🔐 <b>Verification Required</b>\n\n"
-            "Refer & Earn use karne ke liye private group "
-            "aur private channel dono join karo.\n\n"
-            "Join karne ke baad Check Join dabao.",
+            (
+                "🔐 <b>Verification Required</b>\n\n"
+                "To use Refer &amp; Earn, please join both "
+                "our private group and private channel.\n\n"
+                "After joining both, tap "
+                "<b>Check Membership</b>."
+            ),
             reply_markup=referral_join_keyboard(),
             parse_mode="HTML"
         )
@@ -74,7 +85,7 @@ def show_referral_info(message):
 
     if not user.get("is_verified"):
         finish_verification(
-            message.chat.id,
+            message,
             user_id,
             message.from_user.first_name or "User"
         )
@@ -96,12 +107,12 @@ def show_referral_info(message):
 
     text = (
         "👥 <b>REFER &amp; EARN</b>\n\n"
-        "Apna referral link friends ke saath share karo!\n\n"
-        f"🎁 Har successful referral par "
-        f"<b>+{REFERRAL_REWARD} Coins</b> milenge.\n\n"
-        "📌 Referral tabhi successful hoga jab naya user "
-        "group aur channel dono join karke verification "
-        "complete karega.\n\n"
+        "Share your referral link with your friends!\n\n"
+        f"🎁 Earn <b>+{REFERRAL_REWARD} Coins</b> "
+        "for every successful referral.\n\n"
+        "📌 A referral becomes successful when a new user "
+        "joins both the group and channel and completes "
+        "verification.\n\n"
         "🔗 <b>Your Referral Link:</b>\n"
         f"<code>{referral_link}</code>\n\n"
         f"👤 Successful Referrals: "
@@ -130,10 +141,18 @@ def show_referral_info(message):
     )
 
 
+# =========================================================
+# REFERRAL COMMAND
+# =========================================================
+
 @bot.message_handler(commands=["referral"])
 def referral_command(message):
     show_referral_info(message)
 
+
+# =========================================================
+# REFERRAL BUTTON
+# =========================================================
 
 @bot.message_handler(
     func=lambda message: (
