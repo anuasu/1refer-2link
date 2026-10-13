@@ -29,7 +29,7 @@ def current_time():
 
 
 # =========================================================
-# DATABASE INITIALIZATION
+# DATABASE INITIALIZATION AND SAFE MIGRATIONS
 # =========================================================
 
 def init_db():
@@ -101,8 +101,7 @@ def init_db():
                 user_id INTEGER NOT NULL,
                 redeemed_at TEXT NOT NULL,
                 UNIQUE(code, user_id),
-                FOREIGN KEY (code)
-                    REFERENCES redeem_codes(code),
+                FOREIGN KEY (code) REFERENCES redeem_codes(code),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
 
@@ -112,6 +111,7 @@ def init_db():
                 channel_id INTEGER,
                 post_time TEXT DEFAULT '11:00',
                 post_date TEXT,
+                scheduled_at TEXT,
                 repost_interval_hours INTEGER DEFAULT 24,
                 reward_coins INTEGER DEFAULT 10,
                 max_users INTEGER DEFAULT 100,
@@ -142,7 +142,59 @@ def init_db():
                 ON redeem_redemptions(user_id);
         """)
 
-        # Safe migration for existing databases.
+        # Add missing columns to an existing database.
+        # Existing tables and records are preserved.
+        migrations = {
+            "repost_interval_hours":
+                "ALTER TABLE redeem_settings ADD COLUMN "
+                "repost_interval_hours INTEGER DEFAULT 24",
+
+            "post_date":
+                "ALTER TABLE redeem_settings ADD COLUMN post_date TEXT",
+
+            "scheduled_at":
+                "ALTER TABLE redeem_settings ADD COLUMN scheduled_at TEXT",
+
+            "active_code":
+                "ALTER TABLE redeem_settings ADD COLUMN active_code TEXT",
+
+            "active_message_id":
+                "ALTER TABLE redeem_settings ADD COLUMN active_message_id INTEGER",
+
+            "last_post_date":
+                "ALTER TABLE redeem_settings ADD COLUMN last_post_date TEXT",
+
+            "last_delete_date":
+                "ALTER TABLE redeem_settings ADD COLUMN last_delete_date TEXT",
+
+            "channel_id":
+                "ALTER TABLE redeem_settings ADD COLUMN channel_id INTEGER",
+
+            "post_time":
+                "ALTER TABLE redeem_settings ADD COLUMN "
+                "post_time TEXT DEFAULT '11:00'",
+
+            "reward_coins":
+                "ALTER TABLE redeem_settings ADD COLUMN "
+                "reward_coins INTEGER DEFAULT 10",
+
+            "max_users":
+                "ALTER TABLE redeem_settings ADD COLUMN "
+                "max_users INTEGER DEFAULT 100",
+
+            "expiry_hours":
+                "ALTER TABLE redeem_settings ADD COLUMN "
+                "expiry_hours INTEGER DEFAULT 24",
+
+            "auto_enabled":
+                "ALTER TABLE redeem_settings ADD COLUMN "
+                "auto_enabled INTEGER DEFAULT 0",
+
+            "updated_at":
+                "ALTER TABLE redeem_settings ADD COLUMN "
+                "updated_at TEXT",
+        }
+
         settings_columns = {
             row["name"]
             for row in conn.execute(
@@ -150,31 +202,31 @@ def init_db():
             ).fetchall()
         }
 
-        if "repost_interval_hours" not in settings_columns:
-            conn.execute("""
-                ALTER TABLE redeem_settings
-                ADD COLUMN repost_interval_hours INTEGER DEFAULT 24
-            """)
-
-        if "post_date" not in settings_columns:
-            conn.execute("""
-                ALTER TABLE redeem_settings
-                ADD COLUMN post_date TEXT
-            """)
+        for column, sql in migrations.items():
+            if column not in settings_columns:
+                conn.execute(sql)
 
         conn.execute("""
             INSERT OR IGNORE INTO redeem_settings (
                 id,
                 auto_enabled,
+                channel_id,
                 post_time,
                 post_date,
+                scheduled_at,
                 repost_interval_hours,
                 reward_coins,
                 max_users,
                 expiry_hours,
                 updated_at
             )
-            VALUES (1, 0, '11:00', NULL, 24, 10, 100, 24, ?)
+            VALUES (1, 0, NULL, '11:00', NULL, NULL, 24, 10, 100, 24, ?)
+        """, (current_time(),))
+
+        conn.execute("""
+            UPDATE redeem_settings
+            SET updated_at = ?
+            WHERE id = 1 AND updated_at IS NULL
         """, (current_time(),))
 
 
@@ -191,11 +243,10 @@ def register_user(
     now = current_time()
 
     with get_connection() as conn:
-        existing = conn.execute("""
-            SELECT user_id
-            FROM users
-            WHERE user_id = ?
-        """, (user_id,)).fetchone()
+        existing = conn.execute(
+            "SELECT user_id FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
 
         if existing:
             conn.execute("""
@@ -216,11 +267,10 @@ def register_user(
             referred_by = None
 
         if referred_by is not None:
-            referrer = conn.execute("""
-                SELECT user_id
-                FROM users
-                WHERE user_id = ?
-            """, (referred_by,)).fetchone()
+            referrer = conn.execute(
+                "SELECT user_id FROM users WHERE user_id = ?",
+                (referred_by,),
+            ).fetchone()
 
             if not referrer:
                 referred_by = None
@@ -383,9 +433,10 @@ def reward_pending_referrals(conn, referrer_id, now):
             now,
         ))
 
-        balance = conn.execute("""
-            SELECT coins_balance FROM users WHERE user_id = ?
-        """, (referrer_id,)).fetchone()["coins_balance"]
+        balance = conn.execute(
+            "SELECT coins_balance FROM users WHERE user_id = ?",
+            (referrer_id,),
+        ).fetchone()["coins_balance"]
 
         newly_rewarded.append({
             "referrer_id": referrer_id,
@@ -425,7 +476,8 @@ def complete_verification(user_id):
 
         if not user["is_verified"]:
             conn.execute("""
-                UPDATE users SET is_verified = 1, updated_at = ?
+                UPDATE users
+                SET is_verified = 1, updated_at = ?
                 WHERE user_id = ?
             """, (now, user_id))
 
@@ -474,9 +526,10 @@ def complete_verification(user_id):
             reward_pending_referrals(conn, user_id, now)
         )
 
-        balance = conn.execute("""
-            SELECT coins_balance FROM users WHERE user_id = ?
-        """, (user_id,)).fetchone()
+        balance = conn.execute(
+            "SELECT coins_balance FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
 
         result["coins_balance"] = balance["coins_balance"]
         result["success"] = True
@@ -492,8 +545,7 @@ def get_user_stats(user_id):
     with get_connection() as conn:
         row = conn.execute("""
             SELECT coins_balance, total_coins_earned, total_coins_spent
-            FROM users
-            WHERE user_id = ?
+            FROM users WHERE user_id = ?
         """, (user_id,)).fetchone()
 
         if not row:
@@ -533,9 +585,7 @@ def get_global_stats():
         ).fetchone()["total"]
 
         total_referrals = conn.execute("""
-            SELECT COUNT(*) AS total
-            FROM referrals
-            WHERE rewarded = 1
+            SELECT COUNT(*) AS total FROM referrals WHERE rewarded = 1
         """).fetchone()["total"]
 
         total_coins_spent = conn.execute("""
@@ -610,6 +660,9 @@ def create_redeem_code(
     ):
         return False
 
+    if isinstance(expires_at, datetime):
+        expires_at = expires_at.isoformat(timespec="seconds")
+
     now = current_time()
 
     with get_connection() as conn:
@@ -673,18 +726,18 @@ def redeem_code_for_user(user_id, code):
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
 
-        user = conn.execute("""
-            SELECT user_id, coins_balance
-            FROM users
-            WHERE user_id = ?
-        """, (user_id,)).fetchone()
+        user = conn.execute(
+            "SELECT user_id, coins_balance FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
 
         if not user:
             return {"success": False, "reason": "user_not_found"}
 
-        code_row = conn.execute("""
-            SELECT * FROM redeem_codes WHERE code = ?
-        """, (code,)).fetchone()
+        code_row = conn.execute(
+            "SELECT * FROM redeem_codes WHERE code = ?",
+            (code,),
+        ).fetchone()
 
         if not code_row:
             return {"success": False, "reason": "invalid_code"}
@@ -703,18 +756,15 @@ def redeem_code_for_user(user_id, code):
 
                 if now_dt >= expiry:
                     conn.execute("""
-                        UPDATE redeem_codes
-                        SET is_active = 0
-                        WHERE code = ?
+                        UPDATE redeem_codes SET is_active = 0 WHERE code = ?
                     """, (code,))
                     return {"success": False, "reason": "expired_code"}
 
-            except ValueError:
+            except (ValueError, TypeError):
                 return {"success": False, "reason": "invalid_expiry"}
 
         already_redeemed = conn.execute("""
-            SELECT 1
-            FROM redeem_redemptions
+            SELECT 1 FROM redeem_redemptions
             WHERE code = ? AND user_id = ?
         """, (code, user_id)).fetchone()
 
@@ -723,8 +773,7 @@ def redeem_code_for_user(user_id, code):
 
         redeemed_count = conn.execute("""
             SELECT COUNT(*) AS total
-            FROM redeem_redemptions
-            WHERE code = ?
+            FROM redeem_redemptions WHERE code = ?
         """, (code,)).fetchone()["total"]
 
         if redeemed_count >= code_row["max_users"]:
@@ -817,6 +866,7 @@ def update_redeem_settings(**settings):
         "channel_id",
         "post_time",
         "post_date",
+        "scheduled_at",
         "repost_interval_hours",
         "reward_coins",
         "max_users",
@@ -848,6 +898,12 @@ def update_redeem_settings(**settings):
         except (ValueError, TypeError):
             return False
 
+    if "scheduled_at" in updates and updates["scheduled_at"] is not None:
+        try:
+            datetime.fromisoformat(str(updates["scheduled_at"]))
+        except (ValueError, TypeError):
+            return False
+
     for key in (
         "reward_coins",
         "max_users",
@@ -874,11 +930,13 @@ def update_redeem_settings(**settings):
             except (TypeError, ValueError):
                 return False
 
+    for key in ("active_code", "active_message_id"):
+        if key in updates and updates[key] == "":
+            updates[key] = None
+
     updates["updated_at"] = current_time()
 
-    columns = ", ".join(
-        f"{column} = ?" for column in updates
-    )
+    columns = ", ".join(f"{column} = ?" for column in updates)
     values = list(updates.values())
 
     with get_connection() as conn:
@@ -972,8 +1030,7 @@ def delete_link(link_id):
 def has_unlocked_link(user_id, link_id):
     with get_connection() as conn:
         row = conn.execute("""
-            SELECT 1
-            FROM unlocked_links
+            SELECT 1 FROM unlocked_links
             WHERE user_id = ? AND link_id = ?
         """, (user_id, link_id)).fetchone()
 
@@ -984,6 +1041,8 @@ def unlock_link(user_id, link_id):
     now = current_time()
 
     with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
         user = conn.execute("""
             SELECT coins_balance
             FROM users
@@ -997,8 +1056,7 @@ def unlock_link(user_id, link_id):
             }
 
         link = conn.execute("""
-            SELECT id, url
-            FROM links
+            SELECT id, url FROM links
             WHERE id = ? AND is_active = 1
         """, (link_id,)).fetchone()
 
@@ -1009,8 +1067,7 @@ def unlock_link(user_id, link_id):
             }
 
         already_unlocked = conn.execute("""
-            SELECT 1
-            FROM unlocked_links
+            SELECT 1 FROM unlocked_links
             WHERE user_id = ? AND link_id = ?
         """, (user_id, link_id)).fetchone()
 
