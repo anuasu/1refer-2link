@@ -20,7 +20,7 @@ from database import (
     deactivate_redeem_code,
 )
 
-# Import handlers so their message/callback handlers register
+# Register handlers
 import handlers.start
 import handlers.referral
 import handlers.statistics
@@ -67,6 +67,14 @@ def get_local_now():
 
 
 def parse_local_datetime(value):
+    """
+    Database timestamps are generated using datetime.now(),
+    which is a naive server-local timestamp.
+
+    Interpret naive timestamps in the server's local timezone,
+    then convert them to the configured timezone.
+    """
+
     if not value:
         return None
 
@@ -74,14 +82,45 @@ def parse_local_datetime(value):
         parsed = datetime.fromisoformat(value)
 
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=LOCAL_TIMEZONE)
+            # current_time() in database.py uses datetime.now().
+            # This represents the host machine's local timezone.
+            parsed = parsed.astimezone()
         else:
-            parsed = parsed.astimezone(LOCAL_TIMEZONE)
+            parsed = parsed.astimezone()
 
-        return parsed
+        return parsed.astimezone(LOCAL_TIMEZONE)
+
+    except (TypeError, ValueError, OverflowError):
+        logger.exception("Could not parse stored datetime")
+        return None
+
+
+def get_configured_post_time(settings):
+    """
+    Return today's configured posting time in the configured timezone.
+    """
+
+    post_time = settings.get("post_time") or "11:00"
+
+    try:
+        parsed_time = datetime.strptime(
+            post_time,
+            "%H:%M",
+        ).time()
+
+        now = get_local_now()
+
+        return datetime.combine(
+            now.date(),
+            parsed_time,
+            tzinfo=LOCAL_TIMEZONE,
+        )
 
     except (TypeError, ValueError):
-        logger.exception("Could not parse stored datetime")
+        logger.error(
+            "Invalid configured post_time: %s",
+            post_time,
+        )
         return None
 
 
@@ -112,8 +151,9 @@ def get_active_auto_code(settings):
 
 def delete_previous_daily_post(settings, today=None):
     """
-    Deletes only the message ID saved for the active automatic code.
-    Never searches for or deletes unrelated/manual channel messages.
+    Delete only the exact channel message tracked in settings.
+
+    Never search for, or delete, unrelated channel messages.
     """
 
     channel_id = settings.get("channel_id") or CHANNEL_ID
@@ -144,13 +184,15 @@ def delete_previous_daily_post(settings, today=None):
                     "Channel mismatch. Refusing to delete the message."
                 )
                 return False
+
         except (TypeError, ValueError):
             logger.error("Invalid channel ID for active redeem code")
             return False
 
+    # Only attempt to delete the recorded message ID.
     try:
         bot.delete_message(
-            chat_id=channel_id,
+            chat_id=int(channel_id),
             message_id=int(message_id),
         )
 
@@ -159,26 +201,28 @@ def delete_previous_daily_post(settings, today=None):
             message_id,
         )
 
-        saved = update_redeem_settings(
-            active_message_id=None,
-            last_delete_date=(
-                today or get_local_now().date().isoformat()
-            ),
-        )
-
-        if not saved:
-            logger.error(
-                "Deleted old post, but could not update database settings."
-            )
-            return False
-
-        return True
-
     except Exception:
         logger.exception(
-            "Could not delete the previous automatic redeem post"
+            "Could not delete the previous automatic redeem post. "
+            "The new post will not be published."
         )
         return False
+
+    saved = update_redeem_settings(
+        active_message_id=None,
+        last_delete_date=(
+            today or get_local_now().date().isoformat()
+        ),
+    )
+
+    if not saved:
+        logger.error(
+            "Old post was deleted, but database tracking "
+            "could not be updated."
+        )
+        return False
+
+    return True
 
 
 # =========================================================
@@ -192,12 +236,15 @@ def publish_daily_redeem_code(settings, today=None):
         reward = int(settings.get("reward_coins") or 10)
         max_users = int(settings.get("max_users") or 100)
         expiry_hours = int(settings.get("expiry_hours") or 24)
+
     except (TypeError, ValueError):
         logger.error("Invalid automatic redeem settings")
         return False
 
     if reward <= 0 or max_users <= 0 or expiry_hours <= 0:
-        logger.error("Reward, maximum users and expiry must be positive")
+        logger.error(
+            "Reward, maximum users and expiry must be positive"
+        )
         return False
 
     # Generate a code that does not already exist.
@@ -247,7 +294,7 @@ def publish_daily_redeem_code(settings, today=None):
 
     try:
         sent_message = bot.send_message(
-            chat_id=channel_id,
+            chat_id=int(channel_id),
             text=message_text,
             parse_mode="HTML",
             disable_web_page_preview=True,
@@ -259,22 +306,27 @@ def publish_daily_redeem_code(settings, today=None):
         try:
             deactivate_redeem_code(code)
         except Exception:
-            logger.exception("Could not deactivate unpublished redeem code")
+            logger.exception(
+                "Could not deactivate unpublished redeem code"
+            )
 
         return False
 
-    now = get_local_now()
-
+    # Save the exact ID of the message that was published.
     saved = update_redeem_settings(
         active_code=code,
         active_message_id=sent_message.message_id,
-        last_post_date=now.date().isoformat(),
+        last_post_date=(
+            today or get_local_now().date().isoformat()
+        ),
     )
 
     if not saved:
-        logger.error(
-            "Code was posted, but its message ID could not be saved. "
-            "Do not enable another automatic post until this is checked."
+        logger.critical(
+            "Redeem code %s was posted, but its message ID "
+            "could not be saved. Automatic deletion is unsafe "
+            "until the tracking data is repaired.",
+            code,
         )
         return False
 
@@ -305,6 +357,7 @@ def daily_redeem_scheduler_job():
             interval_hours = int(
                 settings.get("repost_interval_hours") or 24
             )
+
         except (TypeError, ValueError):
             logger.error("Invalid automatic repost interval")
             return
@@ -317,35 +370,45 @@ def daily_redeem_scheduler_job():
         active_message_id = settings.get("active_message_id")
 
         # -------------------------------------------------
-        # No currently tracked automatic post
+        # NO TRACKED AUTOMATIC POST
         # -------------------------------------------------
 
         if not active_code and not active_message_id:
-            post_time = settings.get("post_time") or "11:00"
+            scheduled_time = get_configured_post_time(settings)
 
-            try:
-                target_time = datetime.strptime(
-                    post_time,
-                    "%H:%M",
-                ).time()
-            except ValueError:
-                logger.error("Invalid initial post time: %s", post_time)
+            if scheduled_time is None:
                 return
 
-            current_time = now.time().replace(
-                second=0,
-                microsecond=0,
+            # Respect the configured posting time.
+            # If the time has already passed today, wait until
+            # tomorrow instead of posting immediately.
+            last_post_date = settings.get("last_post_date")
+
+            if last_post_date == today:
+                return
+
+            if now < scheduled_time:
+                return
+
+            # If the scheduled time was missed today, don't
+            # unexpectedly publish late. Wait for tomorrow.
+            if now.date() == scheduled_time.date() and now > scheduled_time:
+                logger.info(
+                    "Configured posting time has passed and no "
+                    "active post is tracked. Waiting for the next "
+                    "scheduled posting time."
+                )
+                return
+
+            logger.info(
+                "Configured posting time reached. "
+                "Publishing initial automatic redeem post."
             )
-
-            if current_time != target_time:
-                return
-
-            logger.info("Publishing initial automatic redeem post")
 
             publish_daily_redeem_code(settings, today)
             return
 
-        # If only one of the tracking fields exists, don't guess.
+        # If only one tracking field exists, don't guess.
         if not active_code or not active_message_id:
             logger.error(
                 "Incomplete automatic post tracking data. "
@@ -354,7 +417,7 @@ def daily_redeem_scheduler_job():
             return
 
         # -------------------------------------------------
-        # Validate the active code
+        # VALIDATE ACTIVE CODE
         # -------------------------------------------------
 
         code_data = get_active_auto_code(settings)
@@ -367,7 +430,7 @@ def daily_redeem_scheduler_job():
             return
 
         # -------------------------------------------------
-        # Check when the current code was created
+        # CALCULATE REPOST TIME
         # -------------------------------------------------
 
         created_at = parse_local_datetime(
@@ -392,7 +455,7 @@ def daily_redeem_scheduler_job():
         )
 
         # -------------------------------------------------
-        # Delete the old tracked post
+        # DELETE THE OLD TRACKED POST
         # -------------------------------------------------
 
         if not delete_previous_daily_post(settings, today):
@@ -402,17 +465,19 @@ def daily_redeem_scheduler_job():
             return
 
         # -------------------------------------------------
-        # Refresh settings and publish the next code
+        # REFRESH SETTINGS
         # -------------------------------------------------
 
         refreshed_settings = get_redeem_settings() or {}
 
+        # Auto might have been switched OFF during processing.
         if not refreshed_settings.get("auto_enabled", 0):
-            logger.info("Auto Redeem is OFF; skipping next post")
+            logger.info(
+                "Auto Redeem is OFF; skipping the next post."
+            )
             return
 
-        # Clear the previous active code reference before publishing.
-        # Keep the old code record in the database for redemption history.
+        # Clear old code reference but preserve the old code record.
         if not update_redeem_settings(active_code=None):
             logger.error(
                 "Could not clear previous active code reference"
@@ -421,6 +486,18 @@ def daily_redeem_scheduler_job():
 
         refreshed_settings = get_redeem_settings() or {}
 
+        # Do not publish unless both tracking fields are clear.
+        if (
+            refreshed_settings.get("active_code")
+            or refreshed_settings.get("active_message_id")
+        ):
+            logger.error(
+                "Previous post tracking was not fully cleared. "
+                "Refusing to publish another automatic post."
+            )
+            return
+
+        # Publish the replacement code.
         publish_daily_redeem_code(
             refreshed_settings,
             today,
