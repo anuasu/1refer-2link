@@ -2,6 +2,7 @@ import logging
 import secrets
 import string
 import re
+import html
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -18,17 +19,18 @@ from config import (
 
 from database import (
     add_links,
-    get_active_links,
-    get_links_count,
-    delete_link,
-    create_redeem_code,
     get_redeem_code,
     get_redeem_codes,
-    deactivate_redeem_code,
+    create_redeem_code,
     get_redeem_settings,
     update_redeem_settings,
     generate_redeem_expiry,
 )
+
+# Import modules to register their real callback handlers.
+import handlers.broadcast
+import handlers.backup
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,8 @@ def admin_only(message):
 
 
 def get_admin_keyboard():
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    """Admin buttons arranged vertically in one column."""
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
 
     keyboard.add(
         types.InlineKeyboardButton(
@@ -67,9 +70,6 @@ def get_admin_keyboard():
             "🎁 Redeem Management",
             callback_data="admin_redeem_management",
         ),
-    )
-
-    keyboard.add(
         types.InlineKeyboardButton(
             "📢 Broadcast",
             callback_data="admin_broadcast",
@@ -84,7 +84,7 @@ def get_admin_keyboard():
 
 
 def get_redeem_menu_keyboard():
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
 
     keyboard.add(
         types.InlineKeyboardButton(
@@ -95,9 +95,6 @@ def get_redeem_menu_keyboard():
             "🎲 Generate Random Code",
             callback_data="redeem_generate_random",
         ),
-    )
-
-    keyboard.add(
         types.InlineKeyboardButton(
             "📋 View Codes",
             callback_data="redeem_view_codes",
@@ -106,20 +103,17 @@ def get_redeem_menu_keyboard():
             "⚙️ Auto Code Settings",
             callback_data="redeem_auto_settings",
         ),
-    )
-
-    keyboard.add(
         types.InlineKeyboardButton(
             "🔙 Admin Panel",
             callback_data="admin_home",
-        )
+        ),
     )
 
     return keyboard
 
 
 def get_auto_settings_keyboard(settings):
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
 
     enabled = bool(settings.get("auto_enabled", 0))
 
@@ -127,10 +121,7 @@ def get_auto_settings_keyboard(settings):
         types.InlineKeyboardButton(
             "🟢 Auto Redeem: ON" if enabled else "🔴 Auto Redeem: OFF",
             callback_data="redeem_auto_toggle",
-        )
-    )
-
-    keyboard.add(
+        ),
         types.InlineKeyboardButton(
             "📢 Set Channel",
             callback_data="redeem_auto_set_channel",
@@ -139,16 +130,10 @@ def get_auto_settings_keyboard(settings):
             "📅 Set Initial Date & Time",
             callback_data="redeem_auto_set_time",
         ),
-    )
-
-    keyboard.add(
         types.InlineKeyboardButton(
             "⏱️ Repost Interval",
             callback_data="redeem_auto_set_interval",
-        )
-    )
-
-    keyboard.add(
+        ),
         types.InlineKeyboardButton(
             "🪙 Set Reward",
             callback_data="redeem_auto_set_reward",
@@ -157,20 +142,14 @@ def get_auto_settings_keyboard(settings):
             "👥 Set Max Users",
             callback_data="redeem_auto_set_max",
         ),
-    )
-
-    keyboard.add(
         types.InlineKeyboardButton(
             "⌛ Set Code Expiry",
             callback_data="redeem_auto_set_expiry",
-        )
-    )
-
-    keyboard.add(
+        ),
         types.InlineKeyboardButton(
             "🔙 Redeem Menu",
             callback_data="admin_redeem_management",
-        )
+        ),
     )
 
     return keyboard
@@ -183,16 +162,13 @@ def show_auto_settings(chat_id, message_id=None):
     channel_id = settings.get("channel_id") or CHANNEL_ID
 
     scheduled_at = settings.get("scheduled_at")
-
-    # Backward compatibility with databases that only have post_time.
     post_time = settings.get("post_time") or "11:00"
 
-    if scheduled_at:
-        scheduled_display = str(scheduled_at)
-    else:
-        scheduled_display = (
-            f"{post_time} (date not configured)"
-        )
+    scheduled_display = (
+        str(scheduled_at)
+        if scheduled_at
+        else f"{post_time} (date not configured)"
+    )
 
     interval = settings.get("repost_interval_hours") or 24
     reward = settings.get("reward_coins") or 10
@@ -204,8 +180,8 @@ def show_auto_settings(chat_id, message_id=None):
     text = (
         "⚙️ <b>AUTO REDEEM SETTINGS</b>\n\n"
         f"Status: <b>{status}</b>\n"
-        f"Channel ID: <code>{channel_id}</code>\n"
-        f"Initial Date & Time: <b>{scheduled_display}</b>\n"
+        f"Channel ID: <code>{html.escape(str(channel_id))}</code>\n"
+        f"Initial Date &amp; Time: <b>{html.escape(str(scheduled_display))}</b>\n"
         f"Repost Interval: <b>{interval} hours</b>\n"
         f"Reward: <b>{reward} coins</b>\n"
         f"Maximum Users: <b>{max_users}</b>\n"
@@ -275,7 +251,7 @@ def valid_positive_int(value, minimum=1, maximum=2147483647):
 
 def validate_channel_access(channel_id):
     try:
-        chat = bot.get_chat(channel_id)
+        bot.get_chat(channel_id)
 
         member = bot.get_chat_member(
             channel_id,
@@ -292,7 +268,10 @@ def validate_channel_access(channel_id):
 
     except Exception:
         logger.exception("Channel access validation failed")
-        return False, "Bot channel access nahi kar pa raha. Channel ID aur permissions check karo."
+        return False, (
+            "Bot channel access nahi kar pa raha. "
+            "Channel ID aur permissions check karo."
+        )
 
 
 # =========================================================
@@ -345,10 +324,16 @@ def admin_home_callback(call):
 # ADD LINKS
 # =========================================================
 
-@bot.callback_query_handler(func=lambda call: call.data == "admin_add_links")
+@bot.callback_query_handler(
+    func=lambda call: call.data == "admin_add_links"
+)
 def admin_add_links_callback(call):
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        bot.answer_callback_query(
+            call.id,
+            "Admins only!",
+            show_alert=True,
+        )
         return
 
     bot.answer_callback_query(call.id)
@@ -379,7 +364,11 @@ def admin_add_links_callback(call):
 )
 def redeem_management_callback(call):
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        bot.answer_callback_query(
+            call.id,
+            "Admins only!",
+            show_alert=True,
+        )
         return
 
     bot.answer_callback_query(call.id)
@@ -454,7 +443,8 @@ def redeem_generate_random_callback(call):
     bot.send_message(
         call.message.chat.id,
         "🎲 <b>GENERATE RANDOM CODE</b>\n\n"
-        "Send reward coins per user.\nExample: <code>10</code>",
+        "Send reward coins per user.\n"
+        "Example: <code>10</code>",
         parse_mode="HTML",
     )
 
@@ -477,7 +467,10 @@ def redeem_view_codes_callback(call):
         codes = get_redeem_codes()
     except Exception:
         logger.exception("Could not retrieve redeem codes")
-        bot.send_message(call.message.chat.id, "❌ Could not load redeem codes.")
+        bot.send_message(
+            call.message.chat.id,
+            "❌ Could not load redeem codes.",
+        )
         return
 
     if not codes:
@@ -492,16 +485,12 @@ def redeem_view_codes_callback(call):
 
     for item in codes[:30]:
         try:
-            code = item["code"]
+            code = html.escape(str(item["code"]))
             reward = item["reward_coins"]
             max_users = item["max_users"]
-            status = item["status"]
+            status = html.escape(str(item["status"]))
         except (KeyError, TypeError, IndexError):
             continue
-
-        # Escape values before inserting them into HTML.
-        code = str(code).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        status = str(status).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         lines.append(
             f"🎟️ <code>{code}</code>\n"
@@ -573,7 +562,6 @@ def redeem_auto_toggle_callback(call):
             )
             return
 
-        # Do not turn on automatic posting without a future date/time.
         scheduled_at = settings.get("scheduled_at")
 
         if not scheduled_at:
@@ -671,7 +659,7 @@ def redeem_auto_set_time_callback(call):
         call,
         "redeem_auto_time",
         "📅 <b>SET INITIAL POST DATE & TIME</b>\n\n"
-        f"Timezone: <code>{TIMEZONE}</code>\n\n"
+        f"Timezone: <code>{html.escape(str(TIMEZONE))}</code>\n\n"
         "Date aur time is format mein bhejo:\n"
         "<code>YYYY-MM-DD HH:MM</code>\n\n"
         "Example: <code>2026-12-25 17:00</code>\n\n"
@@ -694,26 +682,29 @@ def redeem_auto_set_interval_callback(call):
 
     bot.answer_callback_query(call.id)
 
-    keyboard = types.InlineKeyboardMarkup(row_width=3)
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
 
     keyboard.add(
-        types.InlineKeyboardButton("5 Hours", callback_data="redeem_interval_5"),
-        types.InlineKeyboardButton("12 Hours", callback_data="redeem_interval_12"),
-        types.InlineKeyboardButton("24 Hours", callback_data="redeem_interval_24"),
-    )
-
-    keyboard.add(
+        types.InlineKeyboardButton(
+            "5 Hours",
+            callback_data="redeem_interval_5",
+        ),
+        types.InlineKeyboardButton(
+            "12 Hours",
+            callback_data="redeem_interval_12",
+        ),
+        types.InlineKeyboardButton(
+            "24 Hours",
+            callback_data="redeem_interval_24",
+        ),
         types.InlineKeyboardButton(
             "✍️ Custom Hours",
             callback_data="redeem_interval_custom",
-        )
-    )
-
-    keyboard.add(
+        ),
         types.InlineKeyboardButton(
             "🔙 Back",
             callback_data="redeem_auto_settings",
-        )
+        ),
     )
 
     bot.send_message(
@@ -752,11 +743,19 @@ def redeem_interval_preset_callback(call):
     hours = valid_positive_int(value, 1, 87600)
 
     if hours is None:
-        bot.answer_callback_query(call.id, "Invalid interval.", show_alert=True)
+        bot.answer_callback_query(
+            call.id,
+            "Invalid interval.",
+            show_alert=True,
+        )
         return
 
     if not update_redeem_settings(repost_interval_hours=hours):
-        bot.answer_callback_query(call.id, "Interval save nahi hua.", show_alert=True)
+        bot.answer_callback_query(
+            call.id,
+            "Interval save nahi hua.",
+            show_alert=True,
+        )
         return
 
     bot.answer_callback_query(call.id, f"Interval set: {hours} hours.")
@@ -849,7 +848,11 @@ def redeem_post_manual_callback(call):
     code_data = get_redeem_code(code)
 
     if not code_data:
-        bot.answer_callback_query(call.id, "Code not found.", show_alert=True)
+        bot.answer_callback_query(
+            call.id,
+            "Code not found.",
+            show_alert=True,
+        )
         return
 
     if code_data.get("is_auto"):
@@ -864,7 +867,7 @@ def redeem_post_manual_callback(call):
 
     message_text = (
         "🎁 <b>REDEEM CODE</b>\n\n"
-        f"🎟️ Code: <code>{code}</code>\n"
+        f"🎟️ Code: <code>{html.escape(str(code))}</code>\n"
         f"🪙 Reward: <b>{code_data.get('reward_coins', 0)} coins</b>\n"
         f"👥 Maximum Users: <b>{code_data.get('max_users', 0)}</b>\n\n"
         "🤖 Open the bot and select Redeem Code to claim your reward."
@@ -877,7 +880,10 @@ def redeem_post_manual_callback(call):
             parse_mode="HTML",
         )
 
-        bot.answer_callback_query(call.id, "Manual redeem post published!")
+        bot.answer_callback_query(
+            call.id,
+            "Manual redeem post published!",
+        )
 
         bot.send_message(
             call.message.chat.id,
@@ -943,11 +949,13 @@ def handle_admin_input(message):
         ]
 
         if not links:
-            bot.send_message(message.chat.id, "❌ No links received.")
+            bot.send_message(
+                message.chat.id,
+                "❌ No links received.",
+            )
             return
 
         try:
-            # database.py expects both URLs and admin ID.
             add_links(links, user_id)
 
             admin_sessions.pop(user_id, None)
@@ -985,16 +993,25 @@ def handle_admin_input(message):
         ok, error = validate_channel_access(channel_id)
 
         if not ok:
-            bot.send_message(message.chat.id, f"❌ {error}")
+            bot.send_message(
+                message.chat.id,
+                f"❌ {error}",
+            )
             return
 
         saved = update_redeem_settings(channel_id=channel_id)
 
         if saved:
             admin_sessions.pop(user_id, None)
-            bot.send_message(message.chat.id, "✅ Automatic redeem channel updated.")
+            bot.send_message(
+                message.chat.id,
+                "✅ Automatic redeem channel updated.",
+            )
         else:
-            bot.send_message(message.chat.id, "❌ Channel setting save nahi hui.")
+            bot.send_message(
+                message.chat.id,
+                "❌ Channel setting save nahi hui.",
+            )
 
         show_auto_settings(message.chat.id)
         return
@@ -1024,7 +1041,6 @@ def handle_admin_input(message):
             )
             return
 
-        # scheduled_at support must exist in database.py.
         saved = update_redeem_settings(
             scheduled_at=scheduled_dt.isoformat(),
             post_time=scheduled_dt.strftime("%H:%M"),
@@ -1034,8 +1050,8 @@ def handle_admin_input(message):
         if not saved:
             bot.send_message(
                 message.chat.id,
-                "❌ Date/time save nahi hui. Database mein scheduled_at "
-                "column aur update support verify karna hoga.",
+                "❌ Date/time save nahi hui. Database mein "
+                "scheduled_at column aur update support verify karo.",
             )
             return
 
@@ -1046,7 +1062,7 @@ def handle_admin_input(message):
             "✅ <b>Initial schedule saved!</b>\n\n"
             f"📅 Date: <code>{scheduled_dt.strftime('%Y-%m-%d')}</code>\n"
             f"🕒 Time: <code>{scheduled_dt.strftime('%H:%M')}</code>\n"
-            f"🌐 Timezone: <code>{TIMEZONE}</code>\n\n"
+            f"🌐 Timezone: <code>{html.escape(str(TIMEZONE))}</code>\n\n"
             "Auto Redeem abhi OFF hai. Settings check karke ON kar sakte ho.",
             parse_mode="HTML",
         )
@@ -1071,7 +1087,10 @@ def handle_admin_input(message):
         saved = update_redeem_settings(repost_interval_hours=hours)
 
         if not saved:
-            bot.send_message(message.chat.id, "❌ Interval save nahi hua.")
+            bot.send_message(
+                message.chat.id,
+                "❌ Interval save nahi hua.",
+            )
             return
 
         admin_sessions.pop(user_id, None)
@@ -1101,7 +1120,10 @@ def handle_admin_input(message):
         saved = update_redeem_settings(reward_coins=reward)
 
         if not saved:
-            bot.send_message(message.chat.id, "❌ Reward save nahi hua.")
+            bot.send_message(
+                message.chat.id,
+                "❌ Reward save nahi hua.",
+            )
             return
 
         admin_sessions.pop(user_id, None)
@@ -1127,7 +1149,10 @@ def handle_admin_input(message):
         saved = update_redeem_settings(max_users=max_users)
 
         if not saved:
-            bot.send_message(message.chat.id, "❌ Maximum users save nahi hue.")
+            bot.send_message(
+                message.chat.id,
+                "❌ Maximum users save nahi hue.",
+            )
             return
 
         admin_sessions.pop(user_id, None)
@@ -1153,7 +1178,10 @@ def handle_admin_input(message):
         saved = update_redeem_settings(expiry_hours=expiry)
 
         if not saved:
-            bot.send_message(message.chat.id, "❌ Code expiry save nahi hui.")
+            bot.send_message(
+                message.chat.id,
+                "❌ Code expiry save nahi hui.",
+            )
             return
 
         admin_sessions.pop(user_id, None)
@@ -1173,7 +1201,10 @@ def handle_admin_input(message):
             code = text.upper()
 
             if not 1 <= len(code) <= 50:
-                bot.send_message(message.chat.id, "❌ Code 1–50 characters ka hona chahiye.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Code 1–50 characters ka hona chahiye.",
+                )
                 return
 
             if not re.fullmatch(r"[A-Z0-9_-]+", code):
@@ -1193,40 +1224,58 @@ def handle_admin_input(message):
             session["code"] = code
             session["step"] = "reward"
 
-            bot.send_message(message.chat.id, "🪙 Reward coins bhejo.")
+            bot.send_message(
+                message.chat.id,
+                "🪙 Reward coins bhejo.",
+            )
             return
 
         if step == "reward":
             reward = valid_positive_int(text)
 
             if reward is None:
-                bot.send_message(message.chat.id, "❌ Reward positive number hona chahiye.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Reward positive number hona chahiye.",
+                )
                 return
 
             session["reward"] = reward
             session["step"] = "max_users"
 
-            bot.send_message(message.chat.id, "👥 Maximum users bhejo.")
+            bot.send_message(
+                message.chat.id,
+                "👥 Maximum users bhejo.",
+            )
             return
 
         if step == "max_users":
             max_users = valid_positive_int(text)
 
             if max_users is None:
-                bot.send_message(message.chat.id, "❌ Maximum users positive number hona chahiye.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Maximum users positive number hona chahiye.",
+                )
                 return
 
             session["max_users"] = max_users
             session["step"] = "expiry"
 
-            bot.send_message(message.chat.id, "⌛ Code expiry hours mein bhejo.")
+            bot.send_message(
+                message.chat.id,
+                "⌛ Code expiry hours mein bhejo.",
+            )
             return
 
         if step == "expiry":
             expiry_hours = valid_positive_int(text)
 
             if expiry_hours is None:
-                bot.send_message(message.chat.id, "❌ Expiry positive number honi chahiye.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Expiry positive number honi chahiye.",
+                )
                 return
 
             code = session["code"]
@@ -1252,10 +1301,13 @@ def handle_admin_input(message):
             admin_sessions.pop(user_id, None)
 
             if not created:
-                bot.send_message(message.chat.id, "❌ Code create nahi hua. Logs check karo.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Code create nahi hua. Logs check karo.",
+                )
                 return
 
-            keyboard = types.InlineKeyboardMarkup()
+            keyboard = types.InlineKeyboardMarkup(row_width=1)
             keyboard.add(
                 types.InlineKeyboardButton(
                     "📢 Post to Channel",
@@ -1266,7 +1318,7 @@ def handle_admin_input(message):
             bot.send_message(
                 message.chat.id,
                 "✅ <b>MANUAL REDEEM CODE CREATED</b>\n\n"
-                f"🎟️ Code: <code>{code}</code>\n"
+                f"🎟️ Code: <code>{html.escape(code)}</code>\n"
                 f"🪙 Reward: {reward} coins\n"
                 f"👥 Maximum Users: {max_users}\n"
                 f"⌛ Expiry: {expiry_hours} hours",
@@ -1286,33 +1338,48 @@ def handle_admin_input(message):
             reward = valid_positive_int(text)
 
             if reward is None:
-                bot.send_message(message.chat.id, "❌ Reward positive number hona chahiye.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Reward positive number hona chahiye.",
+                )
                 return
 
             session["reward"] = reward
             session["step"] = "max_users"
 
-            bot.send_message(message.chat.id, "👥 Maximum users bhejo.")
+            bot.send_message(
+                message.chat.id,
+                "👥 Maximum users bhejo.",
+            )
             return
 
         if step == "max_users":
             max_users = valid_positive_int(text)
 
             if max_users is None:
-                bot.send_message(message.chat.id, "❌ Maximum users positive number hona chahiye.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Maximum users positive number hona chahiye.",
+                )
                 return
 
             session["max_users"] = max_users
             session["step"] = "expiry"
 
-            bot.send_message(message.chat.id, "⌛ Expiry hours mein bhejo.")
+            bot.send_message(
+                message.chat.id,
+                "⌛ Expiry hours mein bhejo.",
+            )
             return
 
         if step == "expiry":
             expiry_hours = valid_positive_int(text)
 
             if expiry_hours is None:
-                bot.send_message(message.chat.id, "❌ Expiry positive number honi chahiye.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Expiry positive number honi chahiye.",
+                )
                 return
 
             reward = session["reward"]
@@ -1329,6 +1396,7 @@ def handle_admin_input(message):
 
             if not code:
                 admin_sessions.pop(user_id, None)
+
                 bot.send_message(
                     message.chat.id,
                     "❌ Unique code generate nahi hua. Dobara try karo.",
@@ -1354,10 +1422,13 @@ def handle_admin_input(message):
             admin_sessions.pop(user_id, None)
 
             if not created:
-                bot.send_message(message.chat.id, "❌ Generated code save nahi hua.")
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Generated code save nahi hua.",
+                )
                 return
 
-            keyboard = types.InlineKeyboardMarkup()
+            keyboard = types.InlineKeyboardMarkup(row_width=1)
             keyboard.add(
                 types.InlineKeyboardButton(
                     "📢 Post to Channel",
@@ -1368,7 +1439,7 @@ def handle_admin_input(message):
             bot.send_message(
                 message.chat.id,
                 "✅ <b>RANDOM REDEEM CODE CREATED</b>\n\n"
-                f"🎟️ Code: <code>{code}</code>\n"
+                f"🎟️ Code: <code>{html.escape(code)}</code>\n"
                 f"🪙 Reward: {reward} coins\n"
                 f"👥 Maximum Users: {max_users}\n"
                 f"⌛ Expiry: {expiry_hours} hours",
@@ -1384,40 +1455,11 @@ def handle_admin_input(message):
 
 
 # =========================================================
-# BROADCAST & BACKUP BUTTONS
+# BROADCAST & BACKUP
 # =========================================================
-
-@bot.callback_query_handler(
-    func=lambda call: call.data == "admin_broadcast"
-)
-def admin_broadcast_callback(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
-        return
-
-    bot.answer_callback_query(call.id)
-
-    bot.send_message(
-        call.message.chat.id,
-        "📢 <b>Broadcast</b>\n\n"
-        "Broadcast feature ke liye handlers.broadcast mein configured command use karo.",
-        parse_mode="HTML",
-    )
-
-
-@bot.callback_query_handler(
-    func=lambda call: call.data == "admin_backup"
-)
-def admin_backup_callback(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
-        return
-
-    bot.answer_callback_query(call.id)
-
-    bot.send_message(
-        call.message.chat.id,
-        "💾 <b>Backup & Recovery</b>\n\n"
-        "Backup commands ke liye handlers.backup mein configured feature use karo.",
-        parse_mode="HTML",
-    )
+# Do NOT add callback handlers for admin_broadcast or admin_backup
+# here. They are already registered in:
+# handlers.broadcast.start_broadcast
+# handlers.backup.open_backup_menu
+#
+# Importing those modules above registers the real handlers.
