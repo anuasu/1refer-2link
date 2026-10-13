@@ -1,8 +1,9 @@
-import re
+import logging
 import secrets
 import string
-import logging
-from datetime import datetime, timedelta
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telebot import types
 
@@ -33,1183 +34,1488 @@ logger = logging.getLogger(__name__)
 admin_sessions = {}
 
 
-# ==========================================
+# =========================================================
 # ADMIN HELPERS
-# ==========================================
+# =========================================================
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
 
-def admin_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
+def admin_only(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "⛔ Only admins can use this command.")
+        return False
 
-    keyboard.row(
-        types.InlineKeyboardButton(
-            "🔗 Add Links",
-            callback_data="admin_add_links"
-        )
-    )
-
-    keyboard.row(
-        types.InlineKeyboardButton(
-            "🎁 Redeem Code Management",
-            callback_data="admin_redeem"
-        )
-    )
-
-    keyboard.row(
-        types.InlineKeyboardButton(
-            "📢 Broadcast",
-            callback_data="admin_broadcast"
-        )
-    )
-
-    keyboard.row(
-        types.InlineKeyboardButton(
-            "💾 Backup & Recovery",
-            callback_data="admin_backup"
-        )
-    )
-
-    return keyboard
+    return True
 
 
-def send_admin_panel(chat_id):
-    total_links = get_links_count()
-
-    text = (
-        "👑 <b>ADMIN PANEL</b>\n\n"
-        "Welcome to the admin control panel.\n\n"
-        f"🔗 Active Links: <b>{total_links}</b>\n\n"
-        "Neeche se option select karo."
-    )
-
-    bot.send_message(
-        chat_id,
-        text,
-        reply_markup=admin_keyboard(),
-        parse_mode="HTML"
-    )
-
-
-def cancel_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
+def get_admin_keyboard():
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
 
     keyboard.add(
         types.InlineKeyboardButton(
-            "❌ Cancel",
-            callback_data="admin_cancel_action"
-        )
+            "🔗 Add Links",
+            callback_data="admin_add_links",
+        ),
+        types.InlineKeyboardButton(
+            "🎁 Redeem Management",
+            callback_data="admin_redeem_management",
+        ),
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "📢 Broadcast",
+            callback_data="admin_broadcast",
+        ),
+        types.InlineKeyboardButton(
+            "💾 Backup & Recovery",
+            callback_data="admin_backup",
+        ),
     )
 
     return keyboard
 
 
-# ==========================================
-# ADMIN COMMAND
-# ==========================================
+def get_redeem_menu_keyboard():
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
 
-@bot.message_handler(commands=["admin"])
-def admin_command(message):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(
-            message,
-            "⛔ Only admin can access this panel."
-        )
-        return
-
-    send_admin_panel(message.chat.id)
-
-
-# ==========================================
-# ADD LINKS
-# ==========================================
-
-@bot.callback_query_handler(
-    func=lambda call: call.data == "admin_add_links"
-)
-def add_links_callback(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(
-            call.id,
-            "Access denied!",
-            show_alert=True
-        )
-        return
-
-    admin_sessions[call.from_user.id] = "waiting_for_links"
-
-    bot.answer_callback_query(call.id)
-
-    bot.send_message(
-        call.message.chat.id,
-        "🔗 <b>ADD LINKS</b>\n\n"
-        "Ek message mein ek ya multiple links bhejo.\n\n"
-        "Example:\n"
-        "https://example.com/link1\n"
-        "https://example.com/link2\n"
-        "https://t.me/example\n\n"
-        "Links spaces ya new lines se separate kar sakte ho.",
-        reply_markup=cancel_keyboard(),
-        parse_mode="HTML"
-    )
-
-
-def extract_links(text):
-    pattern = r"https?://[^\s<>]+|t\.me/[^\s<>]+"
-    matches = re.findall(pattern, text)
-
-    links = []
-
-    for link in matches:
-        link = link.strip().rstrip(".,;!?)\"]}")
-
-        if link.startswith("t.me/"):
-            link = "https://" + link
-
-        if link not in links:
-            links.append(link)
-
-    return links
-
-
-@bot.message_handler(
-    func=lambda message: (
-        message.from_user is not None
-        and admin_sessions.get(message.from_user.id)
-        == "waiting_for_links"
-    ),
-    content_types=["text"]
-)
-def receive_links(message):
-    user_id = message.from_user.id
-
-    if not is_admin(user_id):
-        admin_sessions.pop(user_id, None)
-        return
-
-    if message.text.strip().lower() in ("/cancel", "cancel"):
-        admin_sessions.pop(user_id, None)
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Add Links cancelled.",
-            reply_markup=admin_keyboard()
-        )
-        return
-
-    links = extract_links(message.text)
-
-    if not links:
-        bot.send_message(
-            message.chat.id,
-            "❌ Koi valid URL nahi mila.\n\n"
-            "HTTPS URL ya t.me link bhejo."
-        )
-        return
-
-    try:
-        added_ids = add_links(links, user_id)
-    except Exception:
-        logger.exception("Failed to add links")
-        bot.send_message(
-            message.chat.id,
-            "❌ Links save nahi ho paaye. Dobara try karo."
-        )
-        return
-
-    admin_sessions.pop(user_id, None)
-
-    if not added_ids:
-        bot.send_message(
-            message.chat.id,
-            "❌ Links save nahi ho paaye.",
-            reply_markup=admin_keyboard()
-        )
-        return
-
-    bot.send_message(
-        message.chat.id,
-        "✅ <b>LINKS ADDED SUCCESSFULLY</b>\n\n"
-        f"🔗 Links added: <b>{len(added_ids)}</b>\n"
-        f"📊 Total active links: <b>{get_links_count()}</b>",
-        reply_markup=admin_keyboard(),
-        parse_mode="HTML"
-    )
-
-
-# ==========================================
-# REDEEM ADMIN MENU
-# ==========================================
-
-def redeem_admin_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-
-    keyboard.row(
+    keyboard.add(
         types.InlineKeyboardButton(
             "➕ Create Manual Code",
-            callback_data="redeem_create_manual"
-        )
-    )
-
-    keyboard.row(
+            callback_data="redeem_create_manual",
+        ),
         types.InlineKeyboardButton(
             "🎲 Generate Random Code",
-            callback_data="redeem_create_random"
-        )
+            callback_data="redeem_generate_random",
+        ),
     )
 
-    keyboard.row(
+    keyboard.add(
         types.InlineKeyboardButton(
             "📋 View Codes",
-            callback_data="redeem_view_codes"
-        )
-    )
-
-    keyboard.row(
+            callback_data="redeem_view_codes",
+        ),
         types.InlineKeyboardButton(
-            "🤖 Auto Code Settings",
-            callback_data="redeem_auto_settings"
-        )
+            "⚙️ Auto Code Settings",
+            callback_data="redeem_auto_settings",
+        ),
     )
 
-    keyboard.row(
+    keyboard.add(
         types.InlineKeyboardButton(
             "🔙 Admin Panel",
-            callback_data="redeem_back_admin"
+            callback_data="admin_home",
         )
     )
 
     return keyboard
 
 
-def show_redeem_admin(chat_id):
-    try:
-        settings = get_redeem_settings() or {}
-        auto_enabled = settings.get("auto_enabled", 0)
-        post_time = settings.get("post_time", "11:00")
-        reward = settings.get("reward_coins", 10)
-        max_users = settings.get("max_users", 100)
-        expiry_hours = settings.get("expiry_hours", 24)
+def get_auto_settings_keyboard(settings):
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
 
-        text = (
-            "🎁 <b>REDEEM CODE MANAGEMENT</b>\n\n"
-            f"🤖 Automatic Codes: "
-            f"<b>{'ON' if auto_enabled else 'OFF'}</b>\n"
-            f"🕒 Daily Post Time: <b>{post_time}</b>\n"
-            f"🪙 Default Reward: <b>{reward} coins</b>\n"
-            f"👥 Maximum Users: <b>{max_users}</b>\n"
-            f"⏳ Expiry: <b>{expiry_hours} hours</b>\n\n"
-            "Manual codes can be created independently."
-        )
+    enabled = bool(settings.get("auto_enabled", 0))
 
-    except Exception:
-        logger.exception("Unable to load redeem settings")
-        text = (
-            "🎁 <b>REDEEM CODE MANAGEMENT</b>\n\n"
-            "Settings load nahi ho paayi. Database check karo."
+    toggle_text = (
+        "🟢 Auto Redeem: ON"
+        if enabled
+        else "🔴 Auto Redeem: OFF"
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            toggle_text,
+            callback_data="redeem_auto_toggle",
         )
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "📢 Set Channel",
+            callback_data="redeem_auto_set_channel",
+        ),
+        types.InlineKeyboardButton(
+            "🕒 Initial Post Time",
+            callback_data="redeem_auto_set_time",
+        ),
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "⏱️ Repost Interval",
+            callback_data="redeem_auto_set_interval",
+        ),
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "🪙 Set Reward",
+            callback_data="redeem_auto_set_reward",
+        ),
+        types.InlineKeyboardButton(
+            "👥 Set Max Users",
+            callback_data="redeem_auto_set_max",
+        ),
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "⌛ Set Code Expiry",
+            callback_data="redeem_auto_set_expiry",
+        )
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "🔙 Redeem Menu",
+            callback_data="admin_redeem_management",
+        )
+    )
+
+    return keyboard
+
+
+def show_auto_settings(chat_id, message_id=None):
+    settings = get_redeem_settings() or {}
+
+    enabled = bool(settings.get("auto_enabled", 0))
+
+    channel_id = (
+        settings.get("channel_id")
+        or CHANNEL_ID
+    )
+
+    post_time = settings.get("post_time") or "11:00"
+
+    interval = settings.get("repost_interval_hours") or 24
+
+    reward = settings.get("reward_coins") or 10
+
+    max_users = settings.get("max_users") or 100
+
+    expiry = settings.get("expiry_hours") or 24
+
+    status = "🟢 ENABLED" if enabled else "🔴 DISABLED"
+
+    text = (
+        "⚙️ <b>AUTO REDEEM SETTINGS</b>\n\n"
+        f"Status: <b>{status}</b>\n"
+        f"Channel ID: <code>{channel_id}</code>\n"
+        f"Initial Post Time: <b>{post_time}</b>\n"
+        f"Repost Interval: <b>{interval} hours</b>\n"
+        f"Reward: <b>{reward} coins</b>\n"
+        f"Maximum Users: <b>{max_users}</b>\n"
+        f"Code Expiry: <b>{expiry} hours</b>\n\n"
+        "ℹ️ Repost interval aur code expiry alag settings hain.\n"
+        "Repost interval decide karta hai ki next automatic post "
+        "kab publish hogi.\n\n"
+        "⚠️ Auto ON karne ke liye bot ko channel mein post karne "
+        "ki permission honi chahiye."
+    )
+
+    keyboard = get_auto_settings_keyboard(settings)
+
+    if message_id:
+        try:
+            bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=message_id,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            return
+        except Exception:
+            logger.exception("Could not edit auto settings message")
 
     bot.send_message(
         chat_id,
         text,
-        reply_markup=redeem_admin_keyboard(),
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=keyboard,
     )
 
 
-@bot.callback_query_handler(
-    func=lambda call: call.data == "admin_redeem"
-)
-def redeem_admin_callback(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(
-            call.id,
-            "Access denied!",
-            show_alert=True
-        )
-        return
+def ask_for_admin_input(call, action, prompt):
+    admin_sessions[call.from_user.id] = {
+        "action": action,
+        "chat_id": call.message.chat.id,
+    }
 
-    bot.answer_callback_query(call.id)
-    show_redeem_admin(call.message.chat.id)
+    bot.send_message(
+        call.message.chat.id,
+        prompt,
+        parse_mode="HTML",
+    )
 
-
-@bot.callback_query_handler(
-    func=lambda call: call.data == "redeem_back_admin"
-)
-def redeem_back_admin_callback(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(
-            call.id,
-            "Access denied!",
-            show_alert=True
-        )
-        return
-
-    bot.answer_callback_query(call.id)
-    send_admin_panel(call.message.chat.id)
-
-
-# ==========================================
-# CREATE MANUAL / RANDOM CODE
-# ==========================================
 
 def generate_random_code(length=12):
-    alphabet = string.ascii_uppercase + string.digits
+    characters = string.ascii_uppercase + string.digits
 
     return "".join(
-        secrets.choice(alphabet)
+        secrets.choice(characters)
         for _ in range(length)
     )
 
 
-def ask_code_reward(chat_id, user_id, code):
-    admin_sessions[user_id] = {
-        "action": "redeem_reward",
-        "code": code
-    }
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+@bot.message_handler(commands=["admin", "panel"])
+def admin_panel(message):
+    if not admin_only(message):
+        return
 
     bot.send_message(
-        chat_id,
-        f"🎁 Code: <code>{code}</code>\n\n"
-        "Kitne coins ka reward dena hai?\n\n"
-        "Example: <code>100</code>",
-        reply_markup=cancel_keyboard(),
-        parse_mode="HTML"
+        message.chat.id,
+        "🛠️ <b>ADMIN PANEL</b>\n\nSelect an option:",
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard(),
     )
 
 
 @bot.callback_query_handler(
-    func=lambda call: call.data in (
-        "redeem_create_manual",
-        "redeem_create_random"
-    )
+    func=lambda call: call.data == "admin_home"
 )
-def redeem_create_callback(call):
+def admin_home_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "Access denied!",
-            show_alert=True
+            "⛔ Only admins can access this panel.",
+            show_alert=True,
         )
         return
 
     bot.answer_callback_query(call.id)
 
-    if call.data == "redeem_create_random":
-        code = generate_random_code()
-        ask_code_reward(
+    try:
+        bot.edit_message_text(
+            "🛠️ <b>ADMIN PANEL</b>\n\nSelect an option:",
             call.message.chat.id,
-            call.from_user.id,
-            code
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(),
         )
+    except Exception:
+        bot.send_message(
+            call.message.chat.id,
+            "🛠️ <b>ADMIN PANEL</b>",
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(),
+        )
+
+
+# =========================================================
+# ADD LINKS
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "admin_add_links"
+)
+def admin_add_links_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
         return
 
+    bot.answer_callback_query(call.id)
+
     admin_sessions[call.from_user.id] = {
-        "action": "redeem_manual_code"
+        "action": "add_links",
+        "chat_id": call.message.chat.id,
     }
 
     bot.send_message(
         call.message.chat.id,
-        "✍️ Apna custom redeem code bhejo.\n\n"
-        "Example: <code>WELCOME100</code>\n"
-        "Sirf letters, numbers, hyphen aur underscore allowed hain.",
-        reply_markup=cancel_keyboard(),
-        parse_mode="HTML"
+        "🔗 <b>ADD LINKS</b>\n\n"
+        "Send links, one per line.\n\n"
+        "Example:\n"
+        "<code>https://example.com/link1\n"
+        "https://example.com/link2</code>\n\n"
+        "Send /cancel to cancel.",
+        parse_mode="HTML",
     )
 
 
-# ==========================================
-# RECEIVE CODE CREATION DETAILS
-# ==========================================
+# =========================================================
+# REDEEM MANAGEMENT MENU
+# =========================================================
 
-def ask_code_max_users(message, user_id, code, reward):
-    admin_sessions[user_id] = {
-        "action": "redeem_max_users",
-        "code": code,
-        "reward": reward
-    }
+@bot.callback_query_handler(
+    func=lambda call: call.data == "admin_redeem_management"
+)
+def redeem_management_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
 
-    bot.send_message(
-        message.chat.id,
-        "👥 Maximum kitne users code redeem kar sakenge?\n\n"
-        "Example: <code>100</code>",
-        reply_markup=cancel_keyboard(),
-        parse_mode="HTML"
-    )
-
-
-def ask_code_expiry(message, user_id, code, reward, max_users):
-    admin_sessions[user_id] = {
-        "action": "redeem_expiry",
-        "code": code,
-        "reward": reward,
-        "max_users": max_users
-    }
-
-    bot.send_message(
-        message.chat.id,
-        "⏳ Code kitne hours tak valid rahe?\n\n"
-        "Example: <code>24</code>\n"
-        "Expiry nahi chahiye toh <code>0</code> bhejo.",
-        reply_markup=cancel_keyboard(),
-        parse_mode="HTML"
-    )
-
-
-def finish_create_code(message, user_id, code, reward, max_users, expiry_hours):
-    expires_at = None
-
-    if expiry_hours > 0:
-        expires_at = generate_redeem_expiry(expiry_hours)
+    bot.answer_callback_query(call.id)
 
     try:
-        created = create_redeem_code(
-            code=code,
-            reward_coins=reward,
-            max_users=max_users,
-            expires_at=expires_at,
-            created_by=user_id,
-            is_auto=False,
-            channel_id=CHANNEL_ID
+        bot.edit_message_text(
+            "🎁 <b>REDEEM CODE MANAGEMENT</b>\n\n"
+            "Choose an option:",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=get_redeem_menu_keyboard(),
         )
     except Exception:
-        logger.exception("Redeem code creation failed")
         bot.send_message(
-            message.chat.id,
-            "❌ Code create nahi hua. Ho sakta hai ye code pehle se exist karta ho."
+            call.message.chat.id,
+            "🎁 <b>REDEEM CODE MANAGEMENT</b>",
+            parse_mode="HTML",
+            reply_markup=get_redeem_menu_keyboard(),
         )
+
+
+# =========================================================
+# CREATE MANUAL REDEEM CODE
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "redeem_create_manual"
+)
+def redeem_create_manual_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
         return
 
-    if not created:
-        bot.send_message(
-            message.chat.id,
-            "❌ Code create nahi hua. Code pehle se exist kar sakta hai."
-        )
-        return
+    bot.answer_callback_query(call.id)
 
-    admin_sessions.pop(user_id, None)
-
-    text = (
-        "✅ <b>REDEEM CODE CREATED</b>\n\n"
-        f"🎟 Code: <code>{code}</code>\n"
-        f"🪙 Reward: <b>{reward} coins</b>\n"
-        f"👥 Maximum users: <b>{max_users}</b>\n"
-        f"⏳ Expiry: <b>{expiry_hours if expiry_hours else 'No expiry'}"
-        f"{' hours' if expiry_hours else ''}</b>\n\n"
-        "Code users ke redeem menu mein use kiya ja sakta hai."
-    )
-
-    keyboard = types.InlineKeyboardMarkup()
-
-    keyboard.add(
-        types.InlineKeyboardButton(
-            "📢 Post Code to Channel",
-            callback_data=f"redeem_post_{code}"
-        )
-    )
-
-    keyboard.add(
-        types.InlineKeyboardButton(
-            "🎁 Redeem Management",
-            callback_data="admin_redeem"
-        )
-    )
+    admin_sessions[call.from_user.id] = {
+        "action": "manual_code",
+        "step": "code",
+        "chat_id": call.message.chat.id,
+    }
 
     bot.send_message(
-        message.chat.id,
-        text,
-        reply_markup=keyboard,
-        parse_mode="HTML"
+        call.message.chat.id,
+        "🎁 <b>CREATE MANUAL REDEEM CODE</b>\n\n"
+        "Send the code you want to create.\n"
+        "Example: <code>WELCOME2026</code>\n\n"
+        "Send /cancel to cancel.",
+        parse_mode="HTML",
     )
 
 
-# ==========================================
-# CODE INPUT HANDLER
-# ==========================================
+# =========================================================
+# GENERATE RANDOM REDEEM CODE
+# =========================================================
 
-@bot.message_handler(
-    func=lambda message: (
-        message.from_user is not None
-        and isinstance(admin_sessions.get(message.from_user.id), dict)
-        and admin_sessions[message.from_user.id].get("action")
-        in (
-            "redeem_manual_code",
-            "redeem_reward",
-            "redeem_max_users",
-            "redeem_expiry",
-            "redeem_auto_channel",
-            "redeem_auto_time",
-            "redeem_auto_reward",
-            "redeem_auto_max",
-            "redeem_auto_expiry"
-        )
-    ),
-    content_types=["text"]
+@bot.callback_query_handler(
+    func=lambda call: call.data == "redeem_generate_random"
 )
-def receive_redeem_admin_input(message):
-    user_id = message.from_user.id
-
-    if not is_admin(user_id):
-        admin_sessions.pop(user_id, None)
+def redeem_generate_random_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
         return
 
-    value = message.text.strip()
-    session = admin_sessions.get(user_id, {})
-    action = session.get("action")
+    bot.answer_callback_query(call.id)
 
-    if value.lower() in ("/cancel", "cancel"):
-        admin_sessions.pop(user_id, None)
+    admin_sessions[call.from_user.id] = {
+        "action": "random_code",
+        "step": "reward",
+        "chat_id": call.message.chat.id,
+    }
 
-        bot.send_message(
-            message.chat.id,
-            "❌ Action cancelled.",
-            reply_markup=admin_keyboard()
-        )
-        return
-
-    if action == "redeem_manual_code":
-        code = value.upper()
-
-        if not re.fullmatch(r"[A-Z0-9_-]{3,40}", code):
-            bot.send_message(
-                message.chat.id,
-                "❌ Invalid code. 3–40 characters use karo; "
-                "letters, numbers, _ aur - allowed hain."
-            )
-            return
-
-        ask_code_reward(message.chat.id, user_id, code)
-        return
-
-    if action == "redeem_reward":
-        if not value.isdigit() or int(value) <= 0:
-            bot.send_message(
-                message.chat.id,
-                "❌ Reward positive whole number hona chahiye."
-            )
-            return
-
-        reward = int(value)
-
-        if reward > 1_000_000_000:
-            bot.send_message(message.chat.id, "❌ Reward bahut zyada hai.")
-            return
-
-        ask_code_max_users(
-            message,
-            user_id,
-            session["code"],
-            reward
-        )
-        return
-
-    if action == "redeem_max_users":
-        if not value.isdigit() or int(value) <= 0:
-            bot.send_message(
-                message.chat.id,
-                "❌ Maximum users positive whole number hona chahiye."
-            )
-            return
-
-        max_users = int(value)
-
-        if max_users > 1_000_000:
-            bot.send_message(message.chat.id, "❌ Maximum users limit bahut zyada hai.")
-            return
-
-        ask_code_expiry(
-            message,
-            user_id,
-            session["code"],
-            session["reward"],
-            max_users
-        )
-        return
-
-    if action == "redeem_expiry":
-        if not value.isdigit():
-            bot.send_message(
-                message.chat.id,
-                "❌ Hours mein number bhejo, example: 24. No expiry ke liye 0."
-            )
-            return
-
-        expiry_hours = int(value)
-
-        if expiry_hours > 87600:
-            bot.send_message(message.chat.id, "❌ Expiry maximum 10 years tak rakho.")
-            return
-
-        finish_create_code(
-            message,
-            user_id,
-            session["code"],
-            session["reward"],
-            session["max_users"],
-            expiry_hours
-        )
-        return
-
-    if action == "redeem_auto_channel":
-        try:
-            channel_id = int(value)
-        except ValueError:
-            bot.send_message(
-                message.chat.id,
-                "❌ Channel ID number hona chahiye.\n"
-                "Example: <code>-1001234567890</code>",
-                parse_mode="HTML"
-            )
-            return
-
-        try:
-            update_redeem_settings(channel_id=channel_id)
-        except Exception:
-            logger.exception("Could not update channel ID")
-            bot.send_message(message.chat.id, "❌ Channel ID save nahi hua.")
-            return
-
-        admin_sessions[user_id] = {"action": "redeem_auto_time"}
-
-        bot.send_message(
-            message.chat.id,
-            "🕒 Daily post time bhejo (24-hour format).\n"
-            "Example: <code>11:00</code>",
-            reply_markup=cancel_keyboard(),
-            parse_mode="HTML"
-        )
-        return
-
-    if action == "redeem_auto_time":
-        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
-            bot.send_message(
-                message.chat.id,
-                "❌ Time HH:MM format mein bhejo, example: 11:00."
-            )
-            return
-
-        try:
-            update_redeem_settings(post_time=value)
-        except Exception:
-            logger.exception("Could not update auto post time")
-            bot.send_message(message.chat.id, "❌ Time save nahi hua.")
-            return
-
-        admin_sessions[user_id] = {"action": "redeem_auto_reward"}
-
-        bot.send_message(
-            message.chat.id,
-            "🪙 Daily code ka reward coins mein bhejo.\n"
-            "Example: <code>100</code>",
-            reply_markup=cancel_keyboard(),
-            parse_mode="HTML"
-        )
-        return
-
-    if action == "redeem_auto_reward":
-        if not value.isdigit() or int(value) <= 0:
-            bot.send_message(message.chat.id, "❌ Positive reward number bhejo.")
-            return
-
-        try:
-            update_redeem_settings(reward_coins=int(value))
-        except Exception:
-            logger.exception("Could not update auto reward")
-            bot.send_message(message.chat.id, "❌ Reward save nahi hua.")
-            return
-
-        admin_sessions[user_id] = {"action": "redeem_auto_max"}
-
-        bot.send_message(
-            message.chat.id,
-            "👥 Daily code ka maximum users number bhejo.\n"
-            "Example: <code>100</code>",
-            reply_markup=cancel_keyboard(),
-            parse_mode="HTML"
-        )
-        return
-
-    if action == "redeem_auto_max":
-        if not value.isdigit() or int(value) <= 0:
-            bot.send_message(message.chat.id, "❌ Positive user limit bhejo.")
-            return
-
-        try:
-            update_redeem_settings(max_users=int(value))
-        except Exception:
-            logger.exception("Could not update auto max users")
-            bot.send_message(message.chat.id, "❌ User limit save nahi hui.")
-            return
-
-        admin_sessions[user_id] = {"action": "redeem_auto_expiry"}
-
-        bot.send_message(
-            message.chat.id,
-            "⏳ Daily code ki expiry hours mein bhejo.\n"
-            "Example: <code>24</code>",
-            reply_markup=cancel_keyboard(),
-            parse_mode="HTML"
-        )
-        return
-
-    if action == "redeem_auto_expiry":
-        if not value.isdigit() or int(value) < 1:
-            bot.send_message(
-                message.chat.id,
-                "❌ Expiry kam se kam 1 hour honi chahiye."
-            )
-            return
-
-        if int(value) > 87600:
-            bot.send_message(message.chat.id, "❌ Expiry maximum 10 years tak rakho.")
-            return
-
-        try:
-            update_redeem_settings(
-                expiry_hours=int(value),
-                auto_enabled=1
-            )
-        except Exception:
-            logger.exception("Could not save auto settings")
-            bot.send_message(message.chat.id, "❌ Auto settings save nahi hui.")
-            return
-
-        admin_sessions.pop(user_id, None)
-
-        bot.send_message(
-            message.chat.id,
-            "✅ <b>Automatic code settings saved!</b>\n\n"
-            "Auto mode ON hai. Daily scheduler ko `main.py` mein "
-            "configure karna abhi baaki hai.",
-            reply_markup=redeem_admin_keyboard(),
-            parse_mode="HTML"
-        )
+    bot.send_message(
+        call.message.chat.id,
+        "🎲 <b>GENERATE RANDOM CODE</b>\n\n"
+        "Send reward coins per user.\n"
+        "Example: <code>10</code>",
+        parse_mode="HTML",
+    )
 
 
-# ==========================================
-# VIEW CODES
-# ==========================================
+# =========================================================
+# VIEW REDEEM CODES
+# =========================================================
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "redeem_view_codes"
 )
 def redeem_view_codes_callback(call):
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Access denied!", show_alert=True)
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
         return
 
     bot.answer_callback_query(call.id)
 
     try:
-        codes = get_redeem_codes(limit=15)
+        codes = get_redeem_codes()
     except Exception:
-        logger.exception("Could not list redeem codes")
-        bot.send_message(call.message.chat.id, "❌ Codes load nahi ho paaye.")
+        logger.exception("Could not retrieve redeem codes")
+        bot.send_message(
+            call.message.chat.id,
+            "❌ Could not load redeem codes.",
+        )
         return
 
     if not codes:
         bot.send_message(
             call.message.chat.id,
-            "📭 Abhi koi redeem code nahi bana hai.",
-            reply_markup=redeem_admin_keyboard()
+            "📋 No redeem codes found.",
+            reply_markup=get_redeem_menu_keyboard(),
         )
         return
 
-    for item in codes:
-        code = str(item.get("code", ""))
-        reward = item.get("reward_coins", 0)
-        max_users = item.get("max_users", 0)
-        redeemed_count = item.get("redeemed_count", 0)
-        active = item.get("is_active", 0)
-        expires = item.get("expires_at") or "No expiry"
+    lines = ["📋 <b>REDEEM CODES</b>\n"]
 
-        text = (
-            f"🎟️ Code: <code>{code}</code>\n"
-            f"🪙 Reward: <b>{reward}</b> coins\n"
-            f"👥 Redeemed: <b>{redeemed_count}/{max_users}</b>\n"
-            f"📌 Status: <b>{'Active' if active else 'Inactive'}</b>\n"
-            f"⏳ Expiry: <code>{expires}</code>"
+    for item in codes[:30]:
+        if isinstance(item, dict):
+            code = item.get("code", "Unknown")
+            reward = item.get("reward_coins", "?")
+            max_users = item.get("max_users", "?")
+            status = item.get("status", "active")
+        else:
+            try:
+                code = item["code"]
+                reward = item["reward_coins"]
+                max_users = item["max_users"]
+                status = item["status"]
+            except Exception:
+                continue
+
+        lines.append(
+            f"🎟️ <code>{code}</code>\n"
+            f"🪙 Reward: {reward} | 👥 Max: {max_users}\n"
+            f"Status: {status}\n"
         )
 
-        keyboard = types.InlineKeyboardMarkup()
-
-        if active:
-            keyboard.add(
-                types.InlineKeyboardButton(
-                    "🚫 Deactivate Code",
-                    callback_data=f"redeem_deactivate_{code}"
-                )
-            )
-
-        bot.send_message(
-            call.message.chat.id,
-            text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+    bot.send_message(
+        call.message.chat.id,
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=get_redeem_menu_keyboard(),
+    )
 
 
-# ==========================================
-# DEACTIVATE CODE
-# ==========================================
-
-@bot.callback_query_handler(
-    func=lambda call: call.data.startswith("redeem_deactivate_")
-)
-def redeem_deactivate_callback(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Access denied!", show_alert=True)
-        return
-
-    code = call.data[len("redeem_deactivate_"):]
-
-    try:
-        result = deactivate_redeem_code(code)
-    except Exception:
-        logger.exception("Could not deactivate redeem code")
-        bot.answer_callback_query(
-            call.id,
-            "Database error.",
-            show_alert=True
-        )
-        return
-
-    if result:
-        bot.answer_callback_query(call.id, "Code deactivated.")
-        bot.send_message(
-            call.message.chat.id,
-            f"🚫 Code <code>{code}</code> deactivated.",
-            parse_mode="HTML"
-        )
-    else:
-        bot.answer_callback_query(
-            call.id,
-            "Code nahi mila ya deactivate nahi hua.",
-            show_alert=True
-        )
-
-
-# ==========================================
-# POST CODE TO CHANNEL
-# ==========================================
-
-@bot.callback_query_handler(
-    func=lambda call: call.data.startswith("redeem_post_")
-)
-def redeem_post_callback(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Access denied!", show_alert=True)
-        return
-
-    code = call.data[len("redeem_post_"):]
-
-    try:
-        item = get_redeem_code(code)
-    except Exception:
-        logger.exception("Could not retrieve code for posting")
-        item = None
-
-    if not item:
-        bot.answer_callback_query(
-            call.id,
-            "Code nahi mila.",
-            show_alert=True
-        )
-        return
-
-    settings = get_redeem_settings() or {}
-    channel_id = settings.get("channel_id") or CHANNEL_ID
-
-    try:
-        bot.get_chat_member(channel_id, bot.get_me().id)
-
-        post_text = (
-            "🎁 <b>REDEEM CODE AVAILABLE!</b>\n\n"
-            f"🎟 Code: <code>{code}</code>\n"
-            f"🪙 Reward: <b>{item.get('reward_coins', 0)} coins</b>\n"
-            f"👥 Maximum users: <b>{item.get('max_users', 0)}</b>\n\n"
-            "Bot open karo, 🎁 Redeem Code select karo aur code enter karo.\n"
-            "Hurry! Limited redemptions available."
-        )
-
-        sent = bot.send_message(
-            channel_id,
-            post_text,
-            parse_mode="HTML"
-        )
-
-        bot.answer_callback_query(
-            call.id,
-            "Code channel par post ho gaya!"
-        )
-
-        bot.send_message(
-            call.message.chat.id,
-            f"✅ Code posted to channel.\nMessage ID: {sent.message_id}"
-        )
-
-    except Exception:
-        logger.exception("Could not post redeem code to channel")
-        bot.answer_callback_query(
-            call.id,
-            "Posting failed. Bot ko channel admin banao aur permissions check karo.",
-            show_alert=True
-        )
-
-
-# ==========================================
-# AUTOMATIC CODE SETTINGS
-# ==========================================
+# =========================================================
+# AUTO REDEEM SETTINGS
+# =========================================================
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "redeem_auto_settings"
 )
 def redeem_auto_settings_callback(call):
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Access denied!", show_alert=True)
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
         return
-
-    settings = get_redeem_settings() or {}
-    enabled = bool(settings.get("auto_enabled", 0))
-
-    keyboard = types.InlineKeyboardMarkup()
-
-    keyboard.row(
-        types.InlineKeyboardButton(
-            "🟢 Turn Auto ON" if not enabled else "🔴 Turn Auto OFF",
-            callback_data="redeem_auto_toggle"
-        )
-    )
-
-    keyboard.row(
-        types.InlineKeyboardButton(
-            "⚙️ Configure Daily Settings",
-            callback_data="redeem_auto_configure"
-        )
-    )
-
-    keyboard.row(
-        types.InlineKeyboardButton(
-            "🔙 Back",
-            callback_data="admin_redeem"
-        )
-    )
 
     bot.answer_callback_query(call.id)
 
-    bot.send_message(
-        call.message.chat.id,
-        "🤖 <b>AUTOMATIC REDEEM CODES</b>\n\n"
-        f"Status: <b>{'ON' if enabled else 'OFF'}</b>\n"
-        f"Post time: <b>{settings.get('post_time', '11:00')}</b>\n"
-        f"Channel ID: <code>{settings.get('channel_id') or CHANNEL_ID}</code>\n\n"
-        "Auto ON/OFF sirf scheduler mode control karta hai. "
-        "Manual codes alag se kaam karenge.",
-        reply_markup=keyboard,
-        parse_mode="HTML"
+    show_auto_settings(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
     )
 
+
+# =========================================================
+# AUTO REDEEM ON/OFF
+# =========================================================
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "redeem_auto_toggle"
 )
 def redeem_auto_toggle_callback(call):
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Access denied!", show_alert=True)
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
         return
 
     settings = get_redeem_settings() or {}
+
     new_value = 0 if settings.get("auto_enabled", 0) else 1
 
-    try:
-        update_redeem_settings(auto_enabled=new_value)
-    except Exception:
-        logger.exception("Could not toggle auto mode")
+    if new_value:
+        channel_id = (
+            settings.get("channel_id")
+            or CHANNEL_ID
+        )
+
+        try:
+            bot.get_chat(channel_id)
+        except Exception:
+            bot.answer_callback_query(
+                call.id,
+                "❌ Bot cannot access the configured channel. "
+                "Check the channel ID and bot permissions.",
+                show_alert=True,
+            )
+            return
+
+    saved = update_redeem_settings(
+        auto_enabled=new_value,
+    )
+
+    if not saved:
         bot.answer_callback_query(
             call.id,
-            "Settings update failed.",
-            show_alert=True
+            "❌ Could not update setting.",
+            show_alert=True,
         )
         return
 
     bot.answer_callback_query(
         call.id,
-        "Auto mode ON" if new_value else "Auto mode OFF"
+        "Auto Redeem enabled!" if new_value else "Auto Redeem disabled!",
     )
 
-    redeem_auto_settings_callback(
-        type(
-            "CallProxy",
-            (),
-            {
-                "from_user": call.from_user,
-                "data": "redeem_auto_settings",
-                "id": call.id,
-                "message": call.message
-            }
-        )()
+    show_auto_settings(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
     )
 
+
+# =========================================================
+# SET CHANNEL
+# =========================================================
 
 @bot.callback_query_handler(
-    func=lambda call: call.data == "redeem_auto_configure"
+    func=lambda call: call.data == "redeem_auto_set_channel"
 )
-def redeem_auto_configure_callback(call):
+def redeem_auto_set_channel_callback(call):
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Access denied!", show_alert=True)
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
         return
 
     bot.answer_callback_query(call.id)
 
-    admin_sessions[call.from_user.id] = {
-        "action": "redeem_auto_channel"
-    }
-
-    bot.send_message(
-        call.message.chat.id,
-        "📢 Automatic codes kis channel mein post karne hain?\n\n"
-        "Channel ID bhejo.\n"
-        "Example: <code>-1001234567890</code>",
-        reply_markup=cancel_keyboard(),
-        parse_mode="HTML"
+    ask_for_admin_input(
+        call,
+        "redeem_auto_channel",
+        "📢 <b>SET REDEEM CHANNEL</b>\n\n"
+        "Send the channel ID.\n"
+        "Example: <code>-1001234567890</code>\n\n"
+        "The bot must be an admin in that channel.",
     )
 
 
-# ==========================================
-# CANCEL CALLBACK
-# ==========================================
+# =========================================================
+# SET INITIAL POST TIME
+# =========================================================
 
 @bot.callback_query_handler(
-    func=lambda call: call.data == "admin_cancel_action"
+    func=lambda call: call.data == "redeem_auto_set_time"
 )
-def cancel_admin_action(call):
+def redeem_auto_set_time_callback(call):
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(
-            call.id,
-            "Access denied!",
-            show_alert=True
-        )
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
         return
 
-    admin_sessions.pop(call.from_user.id, None)
+    bot.answer_callback_query(call.id)
 
-    bot.answer_callback_query(
-        call.id,
-        "Action cancelled."
+    ask_for_admin_input(
+        call,
+        "redeem_auto_time",
+        "🕒 <b>SET INITIAL POST TIME</b>\n\n"
+        "Send time in 24-hour format, using India/local timezone "
+        "configured in TIMEZONE.\n\n"
+        "Examples: <code>09:00</code>, <code>18:30</code>",
+    )
+
+
+# =========================================================
+# SET REPOST INTERVAL
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "redeem_auto_set_interval"
+)
+def redeem_auto_set_interval_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+
+    keyboard = types.InlineKeyboardMarkup(row_width=3)
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "5 Hours",
+            callback_data="redeem_interval_5",
+        ),
+        types.InlineKeyboardButton(
+            "12 Hours",
+            callback_data="redeem_interval_12",
+        ),
+        types.InlineKeyboardButton(
+            "24 Hours",
+            callback_data="redeem_interval_24",
+        ),
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "✍️ Custom Hours",
+            callback_data="redeem_interval_custom",
+        )
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "🔙 Back",
+            callback_data="redeem_auto_settings",
+        )
     )
 
     bot.send_message(
         call.message.chat.id,
-        "Admin action cancelled.",
-        reply_markup=admin_keyboard()
-    )
-
-
-# ==========================================
-# MANAGE LINKS
-# ==========================================
-
-@bot.message_handler(commands=["manage_links"])
-def manage_links_command(message):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(
-            message,
-            "⛔ Only admin can manage links."
-        )
-        return
-
-    links = get_active_links()
-
-    if not links:
-        bot.reply_to(
-            message,
-            "📭 Abhi koi active link nahi hai."
-        )
-        return
-
-    text = "🔗 <b>ACTIVE LINKS</b>\n\n"
-    keyboard = types.InlineKeyboardMarkup()
-
-    for link in links:
-        text += (
-            f"ID: <code>{link['id']}</code>\n"
-            f"URL: {link['url']}\n\n"
-        )
-
-        keyboard.row(
-            types.InlineKeyboardButton(
-                f"🗑 Delete Link #{link['id']}",
-                callback_data=f"admin_delete_link_{link['id']}"
-            )
-        )
-
-    bot.send_message(
-        message.chat.id,
-        text,
-        reply_markup=keyboard,
+        "⏱️ <b>SET REPOST INTERVAL</b>\n\n"
+        "Select how many hours to wait before replacing "
+        "the previous automatic redeem post.\n\n"
+        "ℹ️ This is separate from code expiry.",
         parse_mode="HTML",
-        disable_web_page_preview=True
+        reply_markup=keyboard,
     )
 
 
 @bot.callback_query_handler(
-    func=lambda call: call.data.startswith("admin_delete_link_")
+    func=lambda call: call.data.startswith("redeem_interval_")
 )
-def delete_link_callback(call):
+def redeem_interval_preset_callback(call):
     if not is_admin(call.from_user.id):
-        bot.answer_callback_query(
-            call.id,
-            "Access denied!",
-            show_alert=True
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
+
+    value = call.data.replace("redeem_interval_", "", 1)
+
+    if value == "custom":
+        bot.answer_callback_query(call.id)
+
+        ask_for_admin_input(
+            call,
+            "redeem_auto_interval",
+            "✍️ <b>CUSTOM REPOST INTERVAL</b>\n\n"
+            "Send the interval in hours.\n"
+            "Examples: <code>3</code>, <code>8</code>, <code>36</code>\n\n"
+            "Allowed range: 1 to 87600 hours.",
         )
         return
 
     try:
-        link_id = int(call.data.rsplit("_", 1)[1])
-    except (ValueError, IndexError):
+        hours = int(value)
+    except ValueError:
         bot.answer_callback_query(
             call.id,
-            "Invalid link ID.",
-            show_alert=True
+            "Invalid interval.",
+            show_alert=True,
         )
         return
 
-    deleted = delete_link(link_id)
-
-    if deleted:
+    if not 1 <= hours <= 87600:
         bot.answer_callback_query(
             call.id,
-            "Link deleted successfully."
+            "Interval must be between 1 and 87600 hours.",
+            show_alert=True,
+        )
+        return
+
+    saved = update_redeem_settings(
+        repost_interval_hours=hours,
+    )
+
+    if not saved:
+        bot.answer_callback_query(
+            call.id,
+            "Could not save interval.",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(
+        call.id,
+        f"Repost interval set to {hours} hours.",
+    )
+
+    show_auto_settings(
+        chat_id=call.message.chat.id,
+    )
+
+
+# =========================================================
+# SET REWARD
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "redeem_auto_set_reward"
+)
+def redeem_auto_set_reward_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+
+    ask_for_admin_input(
+        call,
+        "redeem_auto_reward",
+        "🪙 <b>SET REWARD</b>\n\n"
+        "Send the number of coins each user receives.\n"
+        "Example: <code>10</code>",
+    )
+
+
+# =========================================================
+# SET MAX USERS
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "redeem_auto_set_max"
+)
+def redeem_auto_set_max_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+
+    ask_for_admin_input(
+        call,
+        "redeem_auto_max",
+        "👥 <b>SET MAX USERS</b>\n\n"
+        "Send the maximum number of users allowed to redeem.\n"
+        "Example: <code>100</code>",
+    )
+
+
+# =========================================================
+# SET CODE EXPIRY
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "redeem_auto_set_expiry"
+)
+def redeem_auto_set_expiry_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+
+    ask_for_admin_input(
+        call,
+        "redeem_auto_expiry",
+        "⌛ <b>SET CODE EXPIRY</b>\n\n"
+        "Send how many hours the redeem code should remain valid.\n"
+        "Example: <code>24</code>",
+    )
+
+
+# =========================================================
+# POST MANUAL CODE TO CHANNEL
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("redeem_post_")
+)
+def redeem_post_manual_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
+
+    code = call.data[len("redeem_post_"):]
+
+    code_data = get_redeem_code(code)
+
+    if not code_data:
+        bot.answer_callback_query(
+            call.id,
+            "Code not found.",
+            show_alert=True,
+        )
+        return
+
+    channel_id = (
+        code_data.get("channel_id")
+        or CHANNEL_ID
+    )
+
+    message_text = (
+        "🎁 <b>REDEEM CODE</b>\n\n"
+        f"🎟️ Code: <code>{code}</code>\n"
+        f"🪙 Reward: <b>{code_data.get('reward_coins', 0)} coins</b>\n"
+        f"👥 Maximum Users: <b>{code_data.get('max_users', 0)}</b>\n\n"
+        "🤖 Open the bot and select Redeem Code to claim your reward."
+    )
+
+    try:
+        bot.send_message(
+            chat_id=channel_id,
+            text=message_text,
+            parse_mode="HTML",
+        )
+
+        bot.answer_callback_query(
+            call.id,
+            "Manual redeem post published!",
         )
 
         bot.send_message(
             call.message.chat.id,
-            f"🗑 Link #{link_id} successfully deleted.\n\n"
-            "Users ab is link ko unlock nahi kar sakenge."
+            "✅ Manual redeem code posted successfully.\n"
+            "This post will not be deleted by the automatic repost scheduler.",
         )
-    else:
+
+    except Exception:
+        logger.exception("Could not publish manual redeem post")
+
         bot.answer_callback_query(
             call.id,
-            "Link nahi mila ya pehle hi delete ho chuka hai.",
-            show_alert=True
+            "Failed to post. Check bot channel permissions.",
+            show_alert=True,
         )
 
 
-# ==========================================
-# CANCEL COMMAND
-# ==========================================
+# =========================================================
+# ADMIN INPUT HANDLER
+# =========================================================
 
-@bot.message_handler(commands=["cancel"])
-def cancel_command(message):
+@bot.message_handler(
+    func=lambda message: (
+        message.from_user is not None
+        and message.from_user.id in admin_sessions
+    )
+)
+def handle_admin_input(message):
     user_id = message.from_user.id
 
-    if user_id in admin_sessions:
+    if not is_admin(user_id):
+        admin_sessions.pop(user_id, None)
+        return
+
+    text = (message.text or "").strip()
+
+    if text.lower() == "/cancel":
         admin_sessions.pop(user_id, None)
 
-        bot.reply_to(
-            message,
-            "❌ Current action cancelled.",
-            reply_markup=admin_keyboard()
+        bot.send_message(
+            message.chat.id,
+            "❌ Action cancelled.",
+            reply_markup=get_admin_keyboard(),
         )
+        return
+
+    session = admin_sessions.get(user_id)
+
+    if not session:
+        return
+
+    action = session.get("action")
+
+    # -----------------------------------------------------
+    # ADD LINKS
+    # -----------------------------------------------------
+
+    if action == "add_links":
+        links = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip()
+        ]
+
+        if not links:
+            bot.send_message(message.chat.id, "❌ No links received.")
+            return
+
+        try:
+            add_links(links)
+
+            admin_sessions.pop(user_id, None)
+
+            bot.send_message(
+                message.chat.id,
+                f"✅ Submitted {len(links)} link(s).",
+                reply_markup=get_admin_keyboard(),
+            )
+
+        except Exception:
+            logger.exception("Could not add links")
+
+            bot.send_message(
+                message.chat.id,
+                "❌ Could not save links. Check the link database function.",
+            )
+
+        return
+
+    # -----------------------------------------------------
+    # AUTO CHANNEL
+    # -----------------------------------------------------
+
+    if action == "redeem_auto_channel":
+        try:
+            channel_id = int(text)
+        except ValueError:
+            bot.send_message(
+                message.chat.id,
+                "❌ Invalid channel ID. Send a numeric channel ID.",
+            )
+            return
+
+        try:
+            bot.get_chat(channel_id)
+        except Exception:
+            bot.send_message(
+                message.chat.id,
+                "❌ The bot cannot access this channel. "
+                "Check the channel ID and make the bot an admin.",
+            )
+            return
+
+        saved = update_redeem_settings(
+            channel_id=channel_id,
+        )
+
+        admin_sessions.pop(user_id, None)
+
+        if saved:
+            bot.send_message(
+                message.chat.id,
+                "✅ Automatic redeem channel updated.",
+            )
+        else:
+            bot.send_message(
+                message.chat.id,
+                "❌ Could not save channel settings.",
+            )
+
+        show_auto_settings(message.chat.id)
+        return
+
+    # -----------------------------------------------------
+    # INITIAL POST TIME
+    # -----------------------------------------------------
+
+    if action == "redeem_auto_time":
+        try:
+            datetime.strptime(text, "%H:%M")
+        except ValueError:
+            bot.send_message(
+                message.chat.id,
+                "❌ Invalid time. Use HH:MM format, for example 11:00.",
+            )
+            return
+
+        saved = update_redeem_settings(
+            post_time=text,
+        )
+
+        admin_sessions.pop(user_id, None)
+
+        bot.send_message(
+            message.chat.id,
+            "✅ Initial post time updated."
+            if saved
+            else "❌ Could not save the post time.",
+        )
+
+        show_auto_settings(message.chat.id)
+        return
+
+    # -----------------------------------------------------
+    # REPOST INTERVAL
+    # -----------------------------------------------------
+
+    if action == "redeem_auto_interval":
+        try:
+            hours = int(text)
+        except ValueError:
+            bot.send_message(
+                message.chat.id,
+                "❌ Send the interval as a whole number of hours.",
+            )
+            return
+
+        if not 1 <= hours <= 87600:
+            bot.send_message(
+                message.chat.id,
+                "❌ Interval must be between 1 and 87600 hours.",
+            )
+            return
+
+        saved = update_redeem_settings(
+            repost_interval_hours=hours,
+        )
+
+        admin_sessions.pop(user_id, None)
+
+        bot.send_message(
+            message.chat.id,
+            f"✅ Repost interval set to {hours} hours."
+            if saved
+            else "❌ Could not save the repost interval.",
+        )
+
+        show_auto_settings(message.chat.id)
+        return
+
+    # -----------------------------------------------------
+    # AUTO REWARD
+    # -----------------------------------------------------
+
+    if action == "redeem_auto_reward":
+        try:
+            reward = int(text)
+        except ValueError:
+            bot.send_message(
+                message.chat.id,
+                "❌ Reward must be a number.",
+            )
+            return
+
+        if reward <= 0:
+            bot.send_message(
+                message.chat.id,
+                "❌ Reward must be greater than zero.",
+            )
+            return
+
+        saved = update_redeem_settings(
+            reward_coins=reward,
+        )
+
+        admin_sessions.pop(user_id, None)
+
+        bot.send_message(
+            message.chat.id,
+            "✅ Reward updated."
+            if saved
+            else "❌ Could not save reward.",
+        )
+
+        show_auto_settings(message.chat.id)
+        return
+
+    # -----------------------------------------------------
+    # AUTO MAX USERS
+    # -----------------------------------------------------
+
+    if action == "redeem_auto_max":
+        try:
+            max_users = int(text)
+        except ValueError:
+            bot.send_message(
+                message.chat.id,
+                "❌ Maximum users must be a number.",
+            )
+            return
+
+        if max_users <= 0:
+            bot.send_message(
+                message.chat.id,
+                "❌ Maximum users must be greater than zero.",
+            )
+            return
+
+        saved = update_redeem_settings(
+            max_users=max_users,
+        )
+
+        admin_sessions.pop(user_id, None)
+
+        bot.send_message(
+            message.chat.id,
+            "✅ Maximum users updated."
+            if saved
+            else "❌ Could not save maximum users.",
+        )
+
+        show_auto_settings(message.chat.id)
+        return
+
+    # -----------------------------------------------------
+    # AUTO CODE EXPIRY
+    # -----------------------------------------------------
+
+    if action == "redeem_auto_expiry":
+        try:
+            expiry = int(text)
+        except ValueError:
+            bot.send_message(
+                message.chat.id,
+                "❌ Expiry must be a number of hours.",
+            )
+            return
+
+        if expiry <= 0:
+            bot.send_message(
+                message.chat.id,
+                "❌ Expiry must be greater than zero.",
+            )
+            return
+
+        saved = update_redeem_settings(
+            expiry_hours=expiry,
+        )
+
+        admin_sessions.pop(user_id, None)
+
+        bot.send_message(
+            message.chat.id,
+            "✅ Code expiry updated."
+            if saved
+            else "❌ Could not save code expiry.",
+        )
+
+        show_auto_settings(message.chat.id)
+        return
+
+    # -----------------------------------------------------
+    # MANUAL CODE CREATION
+    # -----------------------------------------------------
+
+    if action == "manual_code":
+        step = session.get("step")
+
+        if step == "code":
+            code = text.upper()
+
+            if not code or len(code) > 50:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Code must contain 1–50 characters.",
+                )
+                return
+
+            if not all(
+                character in string.ascii_uppercase
+                + string.digits
+                + "_-"
+                for character in code
+            ):
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Use only letters, numbers, underscores or hyphens.",
+                )
+                return
+
+            if get_redeem_code(code):
+                bot.send_message(
+                    message.chat.id,
+                    "❌ This code already exists. Send another code.",
+                )
+                return
+
+            session["code"] = code
+            session["step"] = "reward"
+
+            bot.send_message(
+                message.chat.id,
+                "🪙 Send the reward amount in coins.",
+            )
+            return
+
+        if step == "reward":
+            try:
+                reward = int(text)
+            except ValueError:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Reward must be a number.",
+                )
+                return
+
+            if reward <= 0:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Reward must be greater than zero.",
+                )
+                return
+
+            session["reward"] = reward
+            session["step"] = "max_users"
+
+            bot.send_message(
+                message.chat.id,
+                "👥 Send the maximum number of users.",
+            )
+            return
+
+        if step == "max_users":
+            try:
+                max_users = int(text)
+            except ValueError:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Maximum users must be a number.",
+                )
+                return
+
+            if max_users <= 0:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Maximum users must be greater than zero.",
+                )
+                return
+
+            session["max_users"] = max_users
+            session["step"] = "expiry"
+
+            bot.send_message(
+                message.chat.id,
+                "⌛ Send expiry in hours.",
+            )
+            return
+
+        if step == "expiry":
+            try:
+                expiry_hours = int(text)
+            except ValueError:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Expiry must be a number of hours.",
+                )
+                return
+
+            if expiry_hours <= 0:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Expiry must be greater than zero.",
+                )
+                return
+
+            code = session["code"]
+            reward = session["reward"]
+            max_users = session["max_users"]
+
+            expires_at = generate_redeem_expiry(expiry_hours)
+
+            try:
+                created = create_redeem_code(
+                    code=code,
+                    reward_coins=reward,
+                    max_users=max_users,
+                    expires_at=expires_at,
+                    created_by=user_id,
+                    is_auto=False,
+                    channel_id=CHANNEL_ID,
+                )
+            except Exception:
+                logger.exception("Could not create manual redeem code")
+                created = False
+
+            admin_sessions.pop(user_id, None)
+
+            if not created:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Could not create the code. Check the database logs.",
+                )
+                return
+
+            keyboard = types.InlineKeyboardMarkup()
+
+            keyboard.add(
+                types.InlineKeyboardButton(
+                    "📢 Post to Channel",
+                    callback_data=f"redeem_post_{code}",
+                )
+            )
+
+            bot.send_message(
+                message.chat.id,
+                "✅ <b>MANUAL REDEEM CODE CREATED</b>\n\n"
+                f"🎟️ Code: <code>{code}</code>\n"
+                f"🪙 Reward: {reward} coins\n"
+                f"👥 Maximum Users: {max_users}\n"
+                f"⌛ Expiry: {expiry_hours} hours",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+
+            return
+
+    # -----------------------------------------------------
+    # RANDOM CODE CREATION
+    # -----------------------------------------------------
+
+    if action == "random_code":
+        step = session.get("step")
+
+        if step == "reward":
+            try:
+                reward = int(text)
+            except ValueError:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Reward must be a number.",
+                )
+                return
+
+            if reward <= 0:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Reward must be greater than zero.",
+                )
+                return
+
+            session["reward"] = reward
+            session["step"] = "max_users"
+
+            bot.send_message(
+                message.chat.id,
+                "👥 Send the maximum number of users.",
+            )
+            return
+
+        if step == "max_users":
+            try:
+                max_users = int(text)
+            except ValueError:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Maximum users must be a number.",
+                )
+                return
+
+            if max_users <= 0:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Maximum users must be greater than zero.",
+                )
+                return
+
+            session["max_users"] = max_users
+            session["step"] = "expiry"
+
+            bot.send_message(
+                message.chat.id,
+                "⌛ Send expiry in hours.",
+            )
+            return
+
+        if step == "expiry":
+            try:
+                expiry_hours = int(text)
+            except ValueError:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Expiry must be a number of hours.",
+                )
+                return
+
+            if expiry_hours <= 0:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Expiry must be greater than zero.",
+                )
+                return
+
+            reward = session["reward"]
+            max_users = session["max_users"]
+
+            code = None
+
+            for _ in range(10):
+                candidate = generate_random_code()
+
+                if not get_redeem_code(candidate):
+                    code = candidate
+                    break
+
+            if not code:
+                admin_sessions.pop(user_id, None)
+
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Could not generate a unique code. Try again.",
+                )
+                return
+
+            expires_at = generate_redeem_expiry(expiry_hours)
+
+            try:
+                created = create_redeem_code(
+                    code=code,
+                    reward_coins=reward,
+                    max_users=max_users,
+                    expires_at=expires_at,
+                    created_by=user_id,
+                    is_auto=False,
+                    channel_id=CHANNEL_ID,
+                )
+            except Exception:
+                logger.exception("Could not create random redeem code")
+                created = False
+
+            admin_sessions.pop(user_id, None)
+
+            if not created:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Could not save the generated code.",
+                )
+                return
+
+            keyboard = types.InlineKeyboardMarkup()
+
+            keyboard.add(
+                types.InlineKeyboardButton(
+                    "📢 Post to Channel",
+                    callback_data=f"redeem_post_{code}",
+                )
+            )
+
+            bot.send_message(
+                message.chat.id,
+                "✅ <b>RANDOM REDEEM CODE CREATED</b>\n\n"
+                f"🎟️ Code: <code>{code}</code>\n"
+                f"🪙 Reward: {reward} coins\n"
+                f"👥 Maximum Users: {max_users}\n"
+                f"⌛ Expiry: {expiry_hours} hours",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+
+            return
+
+    bot.send_message(
+        message.chat.id,
+        "⚠️ I couldn't identify that admin action. Use /cancel and try again.",
+    )
+
+
+# =========================================================
+# BROADCAST & BACKUP BUTTONS
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "admin_broadcast"
+)
+def admin_broadcast_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+
+    bot.send_message(
+        call.message.chat.id,
+        "📢 <b>Broadcast</b>\n\n"
+        "Use the broadcast command/feature configured in "
+        "<code>handlers.broadcast</code>.",
+        parse_mode="HTML",
+    )
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "admin_backup"
+)
+def admin_backup_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "Admins only!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+
+    bot.send_message(
+        call.message.chat.id,
+        "💾 <b>Backup & Recovery</b>\n\n"
+        "Use the backup commands configured in "
+        "<code>handlers.backup</code>.",
+        parse_mode="HTML",
+    )
