@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from bot import bot
-
 from config import CHANNEL_ID, TIMEZONE
 
 from database import (
@@ -20,14 +19,18 @@ from database import (
     deactivate_redeem_code,
 )
 
-# Register handlers
+
+# =========================================================
+# REGISTER HANDLERS
+# =========================================================
+
 import handlers.start
 import handlers.referral
 import handlers.statistics
 import handlers.links
-import handlers.admin
 import handlers.broadcast
 import handlers.backup
+import handlers.admin
 import handlers.redeem
 
 
@@ -54,13 +57,6 @@ def get_local_now():
 
 
 def parse_local_datetime(value):
-    """
-    Parse a saved datetime and normalize it to TIMEZONE.
-
-    Naive timestamps from the database are interpreted as
-    server-local timestamps for backward compatibility.
-    """
-
     if not value:
         return None
 
@@ -68,23 +64,16 @@ def parse_local_datetime(value):
         parsed = datetime.fromisoformat(str(value))
 
         if parsed.tzinfo is None:
-            parsed = parsed.astimezone()
+            parsed = parsed.replace(tzinfo=LOCAL_TIMEZONE)
 
         return parsed.astimezone(LOCAL_TIMEZONE)
 
     except (TypeError, ValueError, OverflowError):
-        logger.exception("Could not parse stored datetime: %r", value)
+        logger.exception("Invalid datetime: %r", value)
         return None
 
 
 def get_initial_scheduled_datetime(settings):
-    """
-    Prefer the full scheduled_at date/time.
-
-    Older databases may contain only post_time. That fallback
-    schedules the next occurrence of the configured clock time.
-    """
-
     scheduled_at = settings.get("scheduled_at")
 
     if scheduled_at:
@@ -93,7 +82,11 @@ def get_initial_scheduled_datetime(settings):
     post_time = settings.get("post_time") or "11:00"
 
     try:
-        parsed_time = datetime.strptime(post_time, "%H:%M").time()
+        parsed_time = datetime.strptime(
+            post_time,
+            "%H:%M",
+        ).time()
+
         now = get_local_now()
 
         scheduled = datetime.combine(
@@ -108,7 +101,7 @@ def get_initial_scheduled_datetime(settings):
         return scheduled
 
     except (TypeError, ValueError):
-        logger.error("Invalid configured post_time: %r", post_time)
+        logger.error("Invalid post_time: %r", post_time)
         return None
 
 
@@ -126,7 +119,7 @@ def generate_daily_code(length=12):
 
 
 # =========================================================
-# ACTIVE AUTOMATIC CODE
+# GET ACTIVE AUTOMATIC CODE
 # =========================================================
 
 def get_active_auto_code(settings):
@@ -147,26 +140,27 @@ def get_active_auto_code(settings):
 
 
 # =========================================================
-# DELETE TRACKED AUTOMATIC POST ONLY
+# DELETE PREVIOUS AUTOMATIC POST
 # =========================================================
 
 def delete_previous_daily_post(settings):
-    """
-    Delete only the exact message ID saved by the automatic
-    posting system. Never delete unrelated channel messages.
-    """
-
     channel_id = settings.get("channel_id") or CHANNEL_ID
     message_id = settings.get("active_message_id")
 
     if not channel_id or not message_id:
-        logger.error("Missing tracked channel/message ID; refusing deletion.")
+        logger.error(
+            "Missing channel/message ID. "
+            "Refusing to delete any message."
+        )
         return False
 
     code_data = get_active_auto_code(settings)
 
     if not code_data:
-        logger.error("Active code is missing or not automatic; refusing deletion.")
+        logger.error(
+            "Active automatic code not found. "
+            "Refusing deletion."
+        )
         return False
 
     code_channel = code_data.get("channel_id")
@@ -174,10 +168,11 @@ def delete_previous_daily_post(settings):
     if code_channel is not None:
         try:
             if int(code_channel) != int(channel_id):
-                logger.error("Active code channel mismatch; refusing deletion.")
+                logger.error("Channel ID mismatch.")
                 return False
+
         except (TypeError, ValueError):
-            logger.error("Invalid saved channel ID; refusing deletion.")
+            logger.error("Invalid channel ID.")
             return False
 
     try:
@@ -188,8 +183,7 @@ def delete_previous_daily_post(settings):
 
     except Exception:
         logger.exception(
-            "Could not delete the tracked automatic post. "
-            "Replacement post will not be published."
+            "Failed to delete previous automatic post."
         )
         return False
 
@@ -199,11 +193,17 @@ def delete_previous_daily_post(settings):
         last_delete_date=get_local_now().date().isoformat(),
     )
 
-    if not saved:
-        logger.error("Deleted old post, but could not clear tracking in database.")
+    if saved is False:
+        logger.error(
+            "Old post deleted, but tracking could not be cleared."
+        )
         return False
 
-    logger.info("Deleted tracked automatic post: %s", message_id)
+    logger.info(
+        "Previous automatic post deleted: %s",
+        message_id,
+    )
+
     return True
 
 
@@ -215,7 +215,7 @@ def publish_daily_redeem_code(settings):
     channel_id = settings.get("channel_id") or CHANNEL_ID
 
     if not channel_id:
-        logger.error("Automatic redeem channel is not configured.")
+        logger.error("CHANNEL_ID is not configured.")
         return False
 
     try:
@@ -224,11 +224,13 @@ def publish_daily_redeem_code(settings):
         expiry_hours = int(settings.get("expiry_hours") or 24)
 
     except (TypeError, ValueError):
-        logger.error("Invalid automatic redeem settings.")
+        logger.error("Invalid redeem configuration.")
         return False
 
     if reward <= 0 or max_users <= 0 or expiry_hours <= 0:
-        logger.error("Reward, maximum users and expiry must be positive.")
+        logger.error(
+            "Reward, max_users and expiry_hours must be positive."
+        )
         return False
 
     # Generate a unique code.
@@ -242,13 +244,13 @@ def publish_daily_redeem_code(settings):
             break
 
     if not code:
-        logger.error("Could not generate a unique redeem code.")
+        logger.error("Could not generate a unique code.")
         return False
 
     expires_at = generate_redeem_expiry(expiry_hours)
 
     if not expires_at:
-        logger.error("Could not calculate redeem code expiry.")
+        logger.error("Could not generate redeem expiry.")
         return False
 
     try:
@@ -263,11 +265,11 @@ def publish_daily_redeem_code(settings):
         )
 
     except Exception:
-        logger.exception("Could not create automatic redeem code.")
+        logger.exception("Failed to save automatic redeem code.")
         return False
 
     if not created:
-        logger.error("Could not save automatic redeem code.")
+        logger.error("Automatic redeem code was not saved.")
         return False
 
     message_text = (
@@ -290,26 +292,30 @@ def publish_daily_redeem_code(settings):
         )
 
     except Exception:
-        logger.exception("Could not publish automatic redeem code.")
+        logger.exception("Failed to publish automatic redeem code.")
 
         try:
             deactivate_redeem_code(code)
         except Exception:
-            logger.exception("Could not deactivate unpublished code.")
+            logger.exception("Failed to deactivate unpublished code.")
 
         return False
 
-    # Store exact message ID. Without this, safe deletion is impossible.
-    saved = update_redeem_settings(
-        active_code=code,
-        active_message_id=sent_message.message_id,
-        last_post_date=get_local_now().date().isoformat(),
-    )
+    # Save the exact message ID for safe deletion later.
+    try:
+        saved = update_redeem_settings(
+            active_code=code,
+            active_message_id=sent_message.message_id,
+            last_post_date=get_local_now().date().isoformat(),
+        )
 
-    if not saved:
+    except Exception:
+        logger.exception("Failed to save automatic-post tracking.")
+        saved = False
+
+    if saved is False:
         logger.critical(
-            "Code %s was posted, but its message ID was not saved. "
-            "Automatic deletion is unsafe until tracking is repaired.",
+            "Code %s was published, but tracking was not saved.",
             code,
         )
         return False
@@ -319,14 +325,14 @@ def publish_daily_redeem_code(settings):
 
 
 # =========================================================
-# AUTOMATIC REPOST SCHEDULER
+# AUTOMATIC REDEEM SCHEDULER JOB
 # =========================================================
 
 def daily_redeem_scheduler_job():
     try:
         settings = get_redeem_settings() or {}
 
-        # Auto OFF: do nothing.
+        # Auto redeem OFF.
         if not settings.get("auto_enabled", 0):
             return
 
@@ -336,6 +342,7 @@ def daily_redeem_scheduler_job():
             interval_hours = int(
                 settings.get("repost_interval_hours") or 24
             )
+
         except (TypeError, ValueError):
             logger.error("Invalid repost interval.")
             return
@@ -348,43 +355,40 @@ def daily_redeem_scheduler_job():
         active_message_id = settings.get("active_message_id")
 
         # -------------------------------------------------
-        # FIRST POST: WAIT FOR THE CONFIGURED DATE AND TIME
+        # FIRST AUTOMATIC POST
         # -------------------------------------------------
 
         if not active_code and not active_message_id:
             scheduled_at = get_initial_scheduled_datetime(settings)
 
             if scheduled_at is None:
-                logger.error("Initial posting date/time is invalid.")
+                logger.error("Initial posting time is invalid.")
                 return
 
-            # Do not post early.
             if now < scheduled_at:
                 return
 
-            logger.info("Initial scheduled time reached.")
+            logger.info("Initial automatic posting time reached.")
 
             publish_daily_redeem_code(settings)
             return
 
-        # Never guess if tracking is incomplete.
+        # -------------------------------------------------
+        # CHECK TRACKING
+        # -------------------------------------------------
+
         if not active_code or not active_message_id:
             logger.error(
                 "Incomplete automatic-post tracking. "
-                "Refusing to delete or publish anything."
+                "No deletion or replacement will be attempted."
             )
             return
-
-        # -------------------------------------------------
-        # VERIFY ACTIVE CODE
-        # -------------------------------------------------
 
         code_data = get_active_auto_code(settings)
 
         if not code_data:
             logger.error(
-                "Tracked code is missing or not automatic. "
-                "Refusing to delete the tracked post."
+                "Active automatic code is missing or invalid."
             )
             return
 
@@ -392,53 +396,68 @@ def daily_redeem_scheduler_job():
         # CHECK REPOST INTERVAL
         # -------------------------------------------------
 
-        created_at = parse_local_datetime(code_data.get("created_at"))
+        created_at = parse_local_datetime(
+            code_data.get("created_at")
+        )
 
         if created_at is None:
-            logger.error("Could not parse active code creation time.")
+            logger.error("Could not read code creation time.")
             return
 
-        next_repost_time = created_at + timedelta(hours=interval_hours)
+        next_repost_time = created_at + timedelta(
+            hours=interval_hours
+        )
 
         if now < next_repost_time:
             return
 
-        logger.info("Repost interval elapsed; replacing tracked post.")
+        logger.info("Repost interval elapsed.")
 
         # -------------------------------------------------
-        # DELETE ONLY THE TRACKED AUTOMATIC POST
+        # DELETE ONLY TRACKED AUTOMATIC POST
         # -------------------------------------------------
 
         if not delete_previous_daily_post(settings):
-            logger.error("Old post deletion failed; skipping replacement.")
+            logger.error(
+                "Previous post could not be deleted. "
+                "Replacement cancelled."
+            )
             return
 
-        # Re-read settings in case Auto was switched OFF.
+        # Reload settings before creating another post.
         refreshed_settings = get_redeem_settings() or {}
 
         if not refreshed_settings.get("auto_enabled", 0):
-            logger.info("Auto Redeem is OFF; not publishing replacement.")
+            logger.info(
+                "Automatic redeem was switched OFF."
+            )
             return
 
-        # Ensure tracking was cleared before publishing.
         if (
             refreshed_settings.get("active_code")
             or refreshed_settings.get("active_message_id")
         ):
-            logger.error("Tracking was not cleared; refusing to publish.")
+            logger.error(
+                "Previous post tracking is not cleared. "
+                "Replacement cancelled."
+            )
             return
 
         publish_daily_redeem_code(refreshed_settings)
 
     except Exception:
-        logger.exception("Automatic redeem scheduler failed.")
+        logger.exception(
+            "Automatic redeem scheduler encountered an error."
+        )
 
 
 # =========================================================
-# SCHEDULER
+# SCHEDULER SETUP
 # =========================================================
 
-scheduler = BackgroundScheduler(timezone=LOCAL_TIMEZONE)
+scheduler = BackgroundScheduler(
+    timezone=LOCAL_TIMEZONE,
+)
 
 scheduler.add_job(
     daily_redeem_scheduler_job,
@@ -455,7 +474,7 @@ scheduler.add_job(
 # START BOT
 # =========================================================
 
-if __name__ == "__main__":
+def main():
     try:
         scheduler.start()
 
@@ -483,3 +502,7 @@ if __name__ == "__main__":
             scheduler.shutdown(wait=False)
 
         logger.info("Scheduler stopped.")
+
+
+if __name__ == "__main__":
+    main()
