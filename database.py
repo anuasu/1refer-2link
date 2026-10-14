@@ -330,6 +330,52 @@ def is_user_verified(user_id):
 
 
 # =========================================================
+# ADMIN LINK REMOVAL FUNCTIONS
+# =========================================================
+
+def delete_links_by_range(start_id, end_id):
+    if start_id <= 0 or end_id < start_id:
+        return 0
+
+    with get_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE links
+            SET is_active = 0
+            WHERE is_active = 1
+              AND id BETWEEN ? AND ?
+        """, (start_id, end_id))
+
+        return cursor.rowcount
+
+
+def delete_all_links():
+    with get_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE links
+            SET is_active = 0
+            WHERE is_active = 1
+        """)
+
+        return cursor.rowcount
+
+
+def get_links_by_range(start_id, end_id):
+    if start_id <= 0 or end_id < start_id:
+        return []
+
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT id, url, added_by, created_at
+            FROM links
+            WHERE is_active = 1
+              AND id BETWEEN ? AND ?
+            ORDER BY id ASC
+        """, (start_id, end_id)).fetchall()
+
+        return [dict(row) for row in rows]
+
+
+# =========================================================
 # COIN MANAGEMENT
 # =========================================================
 
