@@ -355,6 +355,560 @@ def admin_add_links_callback(call):
     )
 
 
+
+# =========================================================
+# REMOVE LINKS SYSTEM — ADMIN ONLY
+# =========================================================
+
+def get_remove_links_keyboard():
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "🔢 Remove Links by Range",
+            callback_data="remove_links_range",
+        ),
+        types.InlineKeyboardButton(
+            "📋 Remove Individual Link",
+            callback_data="remove_links_list",
+        ),
+        types.InlineKeyboardButton(
+            "🗑️ Remove All Links",
+            callback_data="remove_links_all",
+        ),
+        types.InlineKeyboardButton(
+            "🔙 Admin Panel",
+            callback_data="admin_home",
+        ),
+    )
+
+    return keyboard
+
+
+def get_remove_confirmation_keyboard(action):
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "✅ Confirm",
+            callback_data=action,
+        ),
+        types.InlineKeyboardButton(
+            "❌ Cancel",
+            callback_data="admin_remove_links",
+        ),
+    )
+
+    return keyboard
+
+
+# ---------------------------------------------------------
+# OPEN REMOVE LINKS MENU
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "admin_remove_links"
+)
+def admin_remove_links_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+    try:
+        links = get_active_links()
+        total = len(links)
+
+        bot.send_message(
+            call.message.chat.id,
+            "🗑️ <b>REMOVE LINKS PANEL</b>\n\n"
+            f"🔗 Active Links: <b>{total}</b>\n\n"
+            "Choose an option below:",
+            parse_mode="HTML",
+            reply_markup=get_remove_links_keyboard(),
+        )
+
+    except Exception:
+        logger.exception("Could not open remove links menu")
+
+        bot.send_message(
+            call.message.chat.id,
+            "❌ Could not load active links. Check database.",
+        )
+
+
+# ---------------------------------------------------------
+# REMOVE LINKS BY RANGE
+# Example: 10-20
+# Range refers to positions in the active-links list.
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "remove_links_range"
+)
+def remove_links_range_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+    admin_sessions[call.from_user.id] = {
+        "action": "remove_links_range",
+        "chat_id": call.message.chat.id,
+    }
+
+    bot.send_message(
+        call.message.chat.id,
+        "🔢 <b>REMOVE LINKS BY RANGE</b>\n\n"
+        "Active links ki list mein se range select karo.\n\n"
+        "Example: <code>10-20</code>\n"
+        "Isse list ke Link #10 se #20 tak select honge.\n\n"
+        "⚠️ Removal se pehle confirmation aayega.\n\n"
+        "Cancel karne ke liye /cancel bhejo.",
+        parse_mode="HTML",
+    )
+
+
+# ---------------------------------------------------------
+# CONFIRM RANGE REMOVAL
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("confirm_remove_range_")
+)
+def confirm_remove_range_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    try:
+        parts = call.data.split("_")
+        start_position = int(parts[-2])
+        end_position = int(parts[-1])
+
+    except (ValueError, IndexError):
+        bot.answer_callback_query(
+            call.id,
+            "Invalid range!",
+            show_alert=True,
+        )
+        return
+
+    if (
+        start_position < 1
+        or end_position < start_position
+        or end_position - start_position > 999
+    ):
+        bot.answer_callback_query(
+            call.id,
+            "Invalid range!",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+    links = get_active_links()
+
+    selected = links[start_position - 1:end_position]
+
+    if not selected:
+        bot.send_message(
+            call.message.chat.id,
+            "📭 Is range mein koi active link nahi mila.",
+        )
+        return
+
+    # Save actual database IDs so confirmation targets
+    # exactly the links shown in the preview.
+    selected_ids = [int(link["id"]) for link in selected]
+
+    admin_sessions[call.from_user.id] = {
+        "action": "confirm_remove_range_execute",
+        "chat_id": call.message.chat.id,
+        "link_ids": selected_ids,
+    }
+
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "✅ Confirm Removal",
+            callback_data="execute_remove_range",
+        ),
+        types.InlineKeyboardButton(
+            "❌ Cancel",
+            callback_data="admin_remove_links",
+        ),
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        "⚠️ <b>CONFIRM RANGE REMOVAL</b>\n\n"
+        f"Requested range: <b>{start_position}-{end_position}</b>\n"
+        f"Links selected: <b>{len(selected_ids)}</b>\n\n"
+        "Confirm karne par selected active links deactivate ho jayenge.",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+# ---------------------------------------------------------
+# EXECUTE RANGE REMOVAL
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "execute_remove_range"
+)
+def execute_remove_range_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    session = admin_sessions.get(call.from_user.id, {})
+
+    if session.get("action") != "confirm_remove_range_execute":
+        bot.answer_callback_query(
+            call.id,
+            "Session expired. Please start again.",
+            show_alert=True,
+        )
+        return
+
+    link_ids = session.get("link_ids", [])
+
+    if not link_ids:
+        bot.answer_callback_query(
+            call.id,
+            "No links selected.",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+    removed = 0
+
+    try:
+        for link_id in link_ids:
+            if delete_link(int(link_id)):
+                removed += 1
+
+        admin_sessions.pop(call.from_user.id, None)
+
+        bot.send_message(
+            call.message.chat.id,
+            "✅ <b>RANGE REMOVAL COMPLETED</b>\n\n"
+            f"🗑️ Links deactivated: <b>{removed}</b>",
+            parse_mode="HTML",
+            reply_markup=get_remove_links_keyboard(),
+        )
+
+    except Exception:
+        logger.exception("Range link removal failed")
+
+        bot.send_message(
+            call.message.chat.id,
+            "❌ Range removal failed. Check logs.",
+        )
+
+
+# ---------------------------------------------------------
+# INDIVIDUAL LINK LIST
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "remove_links_list"
+)
+def remove_links_list_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+    try:
+        links = get_active_links()
+
+        if not links:
+            bot.send_message(
+                call.message.chat.id,
+                "📭 No active links found.",
+                reply_markup=get_remove_links_keyboard(),
+            )
+            return
+
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+
+        # Display up to 40 links to keep the message manageable.
+        for link in links[:40]:
+            link_id = int(link["id"])
+
+            keyboard.add(
+                types.InlineKeyboardButton(
+                    f"🗑️ Remove Link ID {link_id}",
+                    callback_data=f"remove_one_{link_id}",
+                )
+            )
+
+        keyboard.add(
+            types.InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_remove_links",
+            )
+        )
+
+        bot.send_message(
+            call.message.chat.id,
+            f"📋 <b>ACTIVE LINKS</b>\n\n"
+            f"Total active links: <b>{len(links)}</b>\n"
+            "Select a link to remove.\n"
+            "Showing up to the first 40 links.",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+    except Exception:
+        logger.exception("Could not display individual links")
+
+        bot.send_message(
+            call.message.chat.id,
+            "❌ Could not load links.",
+        )
+
+
+# ---------------------------------------------------------
+# CONFIRM INDIVIDUAL LINK REMOVAL
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("remove_one_")
+)
+def remove_one_link_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    try:
+        link_id = int(call.data.replace("remove_one_", "", 1))
+    except ValueError:
+        bot.answer_callback_query(
+            call.id,
+            "Invalid link ID!",
+            show_alert=True,
+        )
+        return
+
+    if link_id <= 0:
+        bot.answer_callback_query(
+            call.id,
+            "Invalid link ID!",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "✅ Confirm",
+            callback_data=f"execute_remove_one_{link_id}",
+        ),
+        types.InlineKeyboardButton(
+            "❌ Cancel",
+            callback_data="admin_remove_links",
+        ),
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        f"⚠️ Link ID <b>{link_id}</b> ko deactivate karna hai?",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+# ---------------------------------------------------------
+# EXECUTE INDIVIDUAL REMOVAL
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("execute_remove_one_")
+)
+def execute_remove_one_link_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    try:
+        link_id = int(
+            call.data.replace("execute_remove_one_", "", 1)
+        )
+    except ValueError:
+        bot.answer_callback_query(
+            call.id,
+            "Invalid link ID!",
+            show_alert=True,
+        )
+        return
+
+    if link_id <= 0:
+        bot.answer_callback_query(
+            call.id,
+            "Invalid link ID!",
+            show_alert=True,
+        )
+        return
+
+    try:
+        removed = delete_link(link_id)
+
+        bot.answer_callback_query(
+            call.id,
+            "Link deactivated!" if removed else "Link not found or already inactive.",
+            show_alert=True,
+        )
+
+        if removed:
+            bot.send_message(
+                call.message.chat.id,
+                f"✅ Link ID <code>{link_id}</code> deactivated.",
+                parse_mode="HTML",
+                reply_markup=get_remove_links_keyboard(),
+            )
+
+    except Exception:
+        logger.exception("Individual link removal failed")
+
+        bot.answer_callback_query(
+            call.id,
+            "Removal failed. Check logs.",
+            show_alert=True,
+        )
+
+
+# ---------------------------------------------------------
+# REMOVE ALL LINKS — CONFIRMATION
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "remove_links_all"
+)
+def remove_links_all_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+    links = get_active_links()
+
+    if not links:
+        bot.send_message(
+            call.message.chat.id,
+            "📭 No active links to remove.",
+            reply_markup=get_remove_links_keyboard(),
+        )
+        return
+
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "⚠️ Yes, Remove All",
+            callback_data="execute_remove_all_links",
+        ),
+        types.InlineKeyboardButton(
+            "❌ Cancel",
+            callback_data="admin_remove_links",
+        ),
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        "⚠️ <b>REMOVE ALL ACTIVE LINKS?</b>\n\n"
+        f"Active links: <b>{len(links)}</b>\n\n"
+        "This will deactivate every active link.",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+# ---------------------------------------------------------
+# EXECUTE REMOVE ALL
+# ---------------------------------------------------------
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "execute_remove_all_links"
+)
+def execute_remove_all_links_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "⛔ Admins only!",
+            show_alert=True,
+        )
+        return
+
+    bot.answer_callback_query(call.id)
+
+    try:
+        removed = delete_all_links()
+
+        bot.send_message(
+            call.message.chat.id,
+            "✅ <b>REMOVAL COMPLETED</b>\n\n"
+            f"🗑️ Links deactivated: <b>{removed}</b>",
+            parse_mode="HTML",
+            reply_markup=get_remove_links_keyboard(),
+        )
+
+    except Exception:
+        logger.exception("Could not remove all links")
+
+        bot.send_message(
+            call.message.chat.id,
+            "❌ Could not remove links. Check logs.",
+        )
+
+
+
 # =========================================================
 # REDEEM MANAGEMENT MENU
 # =========================================================
@@ -974,6 +1528,88 @@ def handle_admin_input(message):
                 "❌ Could not save links. Database function check karo.",
             )
 
+        return
+        
+        
+            # -----------------------------------------------------
+    # REMOVE LINKS BY RANGE INPUT
+    # -----------------------------------------------------
+
+    if action == "remove_links_range":
+        match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", text)
+
+        if not match:
+            bot.send_message(
+                message.chat.id,
+                "❌ Invalid range!\n"
+                "Example: <code>10-20</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        start_position = int(match.group(1))
+        end_position = int(match.group(2))
+
+        if (
+            start_position < 1
+            or end_position < start_position
+            or end_position - start_position > 999
+        ):
+            bot.send_message(
+                message.chat.id,
+                "❌ Invalid range. Maximum 1000 positions allowed.",
+            )
+            return
+
+        links = get_active_links()
+
+        if start_position > len(links):
+            bot.send_message(
+                message.chat.id,
+                "❌ Starting position active-links list se bahar hai.",
+            )
+            return
+
+        selected = links[start_position - 1:end_position]
+
+        if not selected:
+            bot.send_message(
+                message.chat.id,
+                "📭 Is range mein koi active link nahi mila.",
+            )
+            return
+
+        # Keep the exact database IDs for confirmation.
+        selected_ids = [int(link["id"]) for link in selected]
+
+        admin_sessions[user_id] = {
+            "action": "confirm_remove_range_execute",
+            "chat_id": message.chat.id,
+            "link_ids": selected_ids,
+        }
+
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+
+        keyboard.add(
+            types.InlineKeyboardButton(
+                "✅ Confirm Removal",
+                callback_data="execute_remove_range",
+            ),
+            types.InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data="admin_remove_links",
+            ),
+        )
+
+        bot.send_message(
+            message.chat.id,
+            "⚠️ <b>CONFIRM LINK REMOVAL</b>\n\n"
+            f"Range: <b>{start_position}-{end_position}</b>\n"
+            f"Links selected: <b>{len(selected_ids)}</b>\n\n"
+            "Confirm karne par selected links deactivate ho jayenge.",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
         return
 
     # -----------------------------------------------------
