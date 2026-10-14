@@ -19,6 +19,9 @@ from config import (
 
 from database import (
     add_links,
+    get_active_links,
+    delete_link,
+    delete_all_links,
     get_redeem_code,
     get_redeem_codes,
     create_redeem_code,
@@ -27,7 +30,7 @@ from database import (
     generate_redeem_expiry,
 )
 
-# Import modules to register their real callback handlers.
+# Import modules to register their callback handlers.
 import handlers.broadcast
 import handlers.backup
 
@@ -58,13 +61,16 @@ def admin_only(message):
 
 
 def get_admin_keyboard():
-    """Admin buttons arranged vertically in one column."""
     keyboard = types.InlineKeyboardMarkup(row_width=1)
 
     keyboard.add(
         types.InlineKeyboardButton(
             "🔗 Add Links",
             callback_data="admin_add_links",
+        ),
+        types.InlineKeyboardButton(
+            "🗑️ Remove Links",
+            callback_data="admin_remove_links",
         ),
         types.InlineKeyboardButton(
             "🎁 Redeem Management",
@@ -181,13 +187,13 @@ def show_auto_settings(chat_id, message_id=None):
         "⚙️ <b>AUTO REDEEM SETTINGS</b>\n\n"
         f"Status: <b>{status}</b>\n"
         f"Channel ID: <code>{html.escape(str(channel_id))}</code>\n"
-        f"Initial Date &amp; Time: <b>{html.escape(str(scheduled_display))}</b>\n"
+        f"Initial Date &amp; Time: "
+        f"<b>{html.escape(str(scheduled_display))}</b>\n"
         f"Repost Interval: <b>{interval} hours</b>\n"
         f"Reward: <b>{reward} coins</b>\n"
         f"Maximum Users: <b>{max_users}</b>\n"
         f"Code Expiry: <b>{expiry} hours</b>\n\n"
         "ℹ️ Repost interval aur code expiry alag hain.\n"
-        "Repost interval automatic post replace karne ka time hai.\n\n"
         "⚠️ Auto ON karne se pehle future date/time set karein.\n"
         "Bot ko channel mein post karne ki permission honi chahiye."
     )
@@ -291,7 +297,9 @@ def admin_panel(message):
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "admin_home")
+@bot.callback_query_handler(
+    func=lambda call: call.data == "admin_home"
+)
 def admin_home_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
@@ -355,9 +363,8 @@ def admin_add_links_callback(call):
     )
 
 
-
 # =========================================================
-# REMOVE LINKS SYSTEM — ADMIN ONLY
+# REMOVE LINKS SYSTEM
 # =========================================================
 
 def get_remove_links_keyboard():
@@ -385,26 +392,18 @@ def get_remove_links_keyboard():
     return keyboard
 
 
-def get_remove_confirmation_keyboard(action):
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
+def show_remove_links_menu(chat_id):
+    links = get_active_links()
 
-    keyboard.add(
-        types.InlineKeyboardButton(
-            "✅ Confirm",
-            callback_data=action,
-        ),
-        types.InlineKeyboardButton(
-            "❌ Cancel",
-            callback_data="admin_remove_links",
-        ),
+    bot.send_message(
+        chat_id,
+        "🗑️ <b>REMOVE LINKS PANEL</b>\n\n"
+        f"🔗 Active Links: <b>{len(links)}</b>\n\n"
+        "Choose an option below:",
+        parse_mode="HTML",
+        reply_markup=get_remove_links_keyboard(),
     )
 
-    return keyboard
-
-
-# ---------------------------------------------------------
-# OPEN REMOVE LINKS MENU
-# ---------------------------------------------------------
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "admin_remove_links"
@@ -413,39 +412,30 @@ def admin_remove_links_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "⛔ Admins only!",
+            "Admins only!",
             show_alert=True,
         )
         return
 
+    # Clear any pending input session when returning to this menu.
+    admin_sessions.pop(call.from_user.id, None)
+
     bot.answer_callback_query(call.id)
 
     try:
-        links = get_active_links()
-        total = len(links)
-
-        bot.send_message(
-            call.message.chat.id,
-            "🗑️ <b>REMOVE LINKS PANEL</b>\n\n"
-            f"🔗 Active Links: <b>{total}</b>\n\n"
-            "Choose an option below:",
-            parse_mode="HTML",
-            reply_markup=get_remove_links_keyboard(),
-        )
-
+        show_remove_links_menu(call.message.chat.id)
     except Exception:
         logger.exception("Could not open remove links menu")
-
         bot.send_message(
             call.message.chat.id,
-            "❌ Could not load active links. Check database.",
+            "❌ Could not load active links. Database check karo.",
         )
 
 
 # ---------------------------------------------------------
-# REMOVE LINKS BY RANGE
-# Example: 10-20
-# Range refers to positions in the active-links list.
+# RANGE INPUT
+# Range means positions in the current active-links list.
+# get_active_links() sorts by ID descending.
 # ---------------------------------------------------------
 
 @bot.callback_query_handler(
@@ -455,7 +445,7 @@ def remove_links_range_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "⛔ Admins only!",
+            "Admins only!",
             show_alert=True,
         )
         return
@@ -470,106 +460,14 @@ def remove_links_range_callback(call):
     bot.send_message(
         call.message.chat.id,
         "🔢 <b>REMOVE LINKS BY RANGE</b>\n\n"
-        "Active links ki list mein se range select karo.\n\n"
+        "Active links ki list se range select karo.\n\n"
         "Example: <code>10-20</code>\n"
-        "Isse list ke Link #10 se #20 tak select honge.\n\n"
-        "⚠️ Removal se pehle confirmation aayega.\n\n"
+        "Isse list ke position #10 se #20 tak links select honge.\n\n"
+        "Removal se pehle confirmation aayega.\n"
         "Cancel karne ke liye /cancel bhejo.",
         parse_mode="HTML",
     )
 
-
-# ---------------------------------------------------------
-# CONFIRM RANGE REMOVAL
-# ---------------------------------------------------------
-
-@bot.callback_query_handler(
-    func=lambda call: call.data.startswith("confirm_remove_range_")
-)
-def confirm_remove_range_callback(call):
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(
-            call.id,
-            "⛔ Admins only!",
-            show_alert=True,
-        )
-        return
-
-    try:
-        parts = call.data.split("_")
-        start_position = int(parts[-2])
-        end_position = int(parts[-1])
-
-    except (ValueError, IndexError):
-        bot.answer_callback_query(
-            call.id,
-            "Invalid range!",
-            show_alert=True,
-        )
-        return
-
-    if (
-        start_position < 1
-        or end_position < start_position
-        or end_position - start_position > 999
-    ):
-        bot.answer_callback_query(
-            call.id,
-            "Invalid range!",
-            show_alert=True,
-        )
-        return
-
-    bot.answer_callback_query(call.id)
-
-    links = get_active_links()
-
-    selected = links[start_position - 1:end_position]
-
-    if not selected:
-        bot.send_message(
-            call.message.chat.id,
-            "📭 Is range mein koi active link nahi mila.",
-        )
-        return
-
-    # Save actual database IDs so confirmation targets
-    # exactly the links shown in the preview.
-    selected_ids = [int(link["id"]) for link in selected]
-
-    admin_sessions[call.from_user.id] = {
-        "action": "confirm_remove_range_execute",
-        "chat_id": call.message.chat.id,
-        "link_ids": selected_ids,
-    }
-
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-
-    keyboard.add(
-        types.InlineKeyboardButton(
-            "✅ Confirm Removal",
-            callback_data="execute_remove_range",
-        ),
-        types.InlineKeyboardButton(
-            "❌ Cancel",
-            callback_data="admin_remove_links",
-        ),
-    )
-
-    bot.send_message(
-        call.message.chat.id,
-        "⚠️ <b>CONFIRM RANGE REMOVAL</b>\n\n"
-        f"Requested range: <b>{start_position}-{end_position}</b>\n"
-        f"Links selected: <b>{len(selected_ids)}</b>\n\n"
-        "Confirm karne par selected active links deactivate ho jayenge.",
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
-
-
-# ---------------------------------------------------------
-# EXECUTE RANGE REMOVAL
-# ---------------------------------------------------------
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "execute_remove_range"
@@ -578,7 +476,7 @@ def execute_remove_range_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "⛔ Admins only!",
+            "Admins only!",
             show_alert=True,
         )
         return
@@ -588,7 +486,7 @@ def execute_remove_range_callback(call):
     if session.get("action") != "confirm_remove_range_execute":
         bot.answer_callback_query(
             call.id,
-            "Session expired. Please start again.",
+            "Session expired. Start again.",
             show_alert=True,
         )
         return
@@ -623,11 +521,10 @@ def execute_remove_range_callback(call):
         )
 
     except Exception:
-        logger.exception("Range link removal failed")
-
+        logger.exception("Range removal failed")
         bot.send_message(
             call.message.chat.id,
-            "❌ Range removal failed. Check logs.",
+            "❌ Range removal failed. Hosting logs check karo.",
         )
 
 
@@ -642,7 +539,7 @@ def remove_links_list_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "⛔ Admins only!",
+            "Admins only!",
             show_alert=True,
         )
         return
@@ -662,7 +559,7 @@ def remove_links_list_callback(call):
 
         keyboard = types.InlineKeyboardMarkup(row_width=1)
 
-        # Display up to 40 links to keep the message manageable.
+        # Show up to 40 links to keep the inline keyboard manageable.
         for link in links[:40]:
             link_id = int(link["id"])
 
@@ -682,26 +579,21 @@ def remove_links_list_callback(call):
 
         bot.send_message(
             call.message.chat.id,
-            f"📋 <b>ACTIVE LINKS</b>\n\n"
+            "📋 <b>ACTIVE LINKS</b>\n\n"
             f"Total active links: <b>{len(links)}</b>\n"
             "Select a link to remove.\n"
-            "Showing up to the first 40 links.",
+            "Showing the first 40 active links.",
             parse_mode="HTML",
             reply_markup=keyboard,
         )
 
     except Exception:
-        logger.exception("Could not display individual links")
-
+        logger.exception("Could not display active links")
         bot.send_message(
             call.message.chat.id,
             "❌ Could not load links.",
         )
 
-
-# ---------------------------------------------------------
-# CONFIRM INDIVIDUAL LINK REMOVAL
-# ---------------------------------------------------------
 
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith("remove_one_")
@@ -710,7 +602,7 @@ def remove_one_link_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "⛔ Admins only!",
+            "Admins only!",
             show_alert=True,
         )
         return
@@ -756,10 +648,6 @@ def remove_one_link_callback(call):
     )
 
 
-# ---------------------------------------------------------
-# EXECUTE INDIVIDUAL REMOVAL
-# ---------------------------------------------------------
-
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith("execute_remove_one_")
 )
@@ -767,7 +655,7 @@ def execute_remove_one_link_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "⛔ Admins only!",
+            "Admins only!",
             show_alert=True,
         )
         return
@@ -795,23 +683,27 @@ def execute_remove_one_link_callback(call):
     try:
         removed = delete_link(link_id)
 
-        bot.answer_callback_query(
-            call.id,
-            "Link deactivated!" if removed else "Link not found or already inactive.",
-            show_alert=True,
-        )
-
         if removed:
+            bot.answer_callback_query(
+                call.id,
+                "Link deactivated!",
+            )
+
             bot.send_message(
                 call.message.chat.id,
                 f"✅ Link ID <code>{link_id}</code> deactivated.",
                 parse_mode="HTML",
                 reply_markup=get_remove_links_keyboard(),
             )
+        else:
+            bot.answer_callback_query(
+                call.id,
+                "Link not found or already inactive.",
+                show_alert=True,
+            )
 
     except Exception:
         logger.exception("Individual link removal failed")
-
         bot.answer_callback_query(
             call.id,
             "Removal failed. Check logs.",
@@ -820,7 +712,7 @@ def execute_remove_one_link_callback(call):
 
 
 # ---------------------------------------------------------
-# REMOVE ALL LINKS — CONFIRMATION
+# REMOVE ALL LINKS
 # ---------------------------------------------------------
 
 @bot.callback_query_handler(
@@ -830,49 +722,53 @@ def remove_links_all_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "⛔ Admins only!",
+            "Admins only!",
             show_alert=True,
         )
         return
 
     bot.answer_callback_query(call.id)
 
-    links = get_active_links()
+    try:
+        links = get_active_links()
 
-    if not links:
+        if not links:
+            bot.send_message(
+                call.message.chat.id,
+                "📭 No active links to remove.",
+                reply_markup=get_remove_links_keyboard(),
+            )
+            return
+
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+
+        keyboard.add(
+            types.InlineKeyboardButton(
+                "⚠️ Yes, Remove All",
+                callback_data="execute_remove_all_links",
+            ),
+            types.InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data="admin_remove_links",
+            ),
+        )
+
         bot.send_message(
             call.message.chat.id,
-            "📭 No active links to remove.",
-            reply_markup=get_remove_links_keyboard(),
+            "⚠️ <b>REMOVE ALL ACTIVE LINKS?</b>\n\n"
+            f"Active links: <b>{len(links)}</b>\n\n"
+            "Confirm karne par sabhi active links deactivate ho jayenge.",
+            parse_mode="HTML",
+            reply_markup=keyboard,
         )
-        return
 
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    except Exception:
+        logger.exception("Could not prepare remove-all confirmation")
+        bot.send_message(
+            call.message.chat.id,
+            "❌ Could not load active links.",
+        )
 
-    keyboard.add(
-        types.InlineKeyboardButton(
-            "⚠️ Yes, Remove All",
-            callback_data="execute_remove_all_links",
-        ),
-        types.InlineKeyboardButton(
-            "❌ Cancel",
-            callback_data="admin_remove_links",
-        ),
-    )
-
-    bot.send_message(
-        call.message.chat.id,
-        "⚠️ <b>REMOVE ALL ACTIVE LINKS?</b>\n\n"
-        f"Active links: <b>{len(links)}</b>\n\n"
-        "This will deactivate every active link.",
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
-
-
-# ---------------------------------------------------------
-# EXECUTE REMOVE ALL
-# ---------------------------------------------------------
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "execute_remove_all_links"
@@ -881,7 +777,7 @@ def execute_remove_all_links_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "⛔ Admins only!",
+            "Admins only!",
             show_alert=True,
         )
         return
@@ -890,6 +786,8 @@ def execute_remove_all_links_callback(call):
 
     try:
         removed = delete_all_links()
+
+        admin_sessions.pop(call.from_user.id, None)
 
         bot.send_message(
             call.message.chat.id,
@@ -901,12 +799,10 @@ def execute_remove_all_links_callback(call):
 
     except Exception:
         logger.exception("Could not remove all links")
-
         bot.send_message(
             call.message.chat.id,
-            "❌ Could not remove links. Check logs.",
+            "❌ Could not remove links. Hosting logs check karo.",
         )
-
 
 
 # =========================================================
@@ -998,7 +894,8 @@ def redeem_generate_random_callback(call):
         call.message.chat.id,
         "🎲 <b>GENERATE RANDOM CODE</b>\n\n"
         "Send reward coins per user.\n"
-        "Example: <code>10</code>",
+        "Example: <code>10</code>\n\n"
+        "Send /cancel to cancel.",
         parse_mode="HTML",
     )
 
@@ -1019,45 +916,46 @@ def redeem_view_codes_callback(call):
 
     try:
         codes = get_redeem_codes()
+
+        if not codes:
+            bot.send_message(
+                call.message.chat.id,
+                "📋 No redeem codes found.",
+                reply_markup=get_redeem_menu_keyboard(),
+            )
+            return
+
+        lines = ["📋 <b>REDEEM CODES</b>\n"]
+
+        for item in codes[:30]:
+            code = html.escape(str(item["code"]))
+            reward = item["reward_coins"]
+            max_users = item["max_users"]
+            status = (
+                "Active"
+                if item.get("is_active")
+                else "Inactive"
+            )
+
+            lines.append(
+                f"🎟️ <code>{code}</code>\n"
+                f"🪙 Reward: {reward} | 👥 Max: {max_users}\n"
+                f"Status: {status}\n"
+            )
+
+        bot.send_message(
+            call.message.chat.id,
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=get_redeem_menu_keyboard(),
+        )
+
     except Exception:
         logger.exception("Could not retrieve redeem codes")
         bot.send_message(
             call.message.chat.id,
             "❌ Could not load redeem codes.",
         )
-        return
-
-    if not codes:
-        bot.send_message(
-            call.message.chat.id,
-            "📋 No redeem codes found.",
-            reply_markup=get_redeem_menu_keyboard(),
-        )
-        return
-
-    lines = ["📋 <b>REDEEM CODES</b>\n"]
-
-    for item in codes[:30]:
-        try:
-            code = html.escape(str(item["code"]))
-            reward = item["reward_coins"]
-            max_users = item["max_users"]
-            status = html.escape(str(item["status"]))
-        except (KeyError, TypeError, IndexError):
-            continue
-
-        lines.append(
-            f"🎟️ <code>{code}</code>\n"
-            f"🪙 Reward: {reward} | 👥 Max: {max_users}\n"
-            f"Status: {status}\n"
-        )
-
-    bot.send_message(
-        call.message.chat.id,
-        "\n".join(lines),
-        parse_mode="HTML",
-        reply_markup=get_redeem_menu_keyboard(),
-    )
 
 
 # =========================================================
@@ -1079,10 +977,6 @@ def redeem_auto_settings_callback(call):
         message_id=call.message.message_id,
     )
 
-
-# =========================================================
-# AUTO REDEEM ON/OFF
-# =========================================================
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "redeem_auto_toggle"
@@ -1191,7 +1085,8 @@ def redeem_auto_set_channel_callback(call):
         "📢 <b>SET REDEEM CHANNEL</b>\n\n"
         "Send the numeric channel ID.\n"
         "Example: <code>-1001234567890</code>\n\n"
-        "Bot channel ka admin hona chahiye.",
+        "Bot channel ka admin hona chahiye.\n"
+        "Send /cancel to cancel.",
     )
 
 
@@ -1214,11 +1109,10 @@ def redeem_auto_set_time_callback(call):
         "redeem_auto_time",
         "📅 <b>SET INITIAL POST DATE & TIME</b>\n\n"
         f"Timezone: <code>{html.escape(str(TIMEZONE))}</code>\n\n"
-        "Date aur time is format mein bhejo:\n"
-        "<code>YYYY-MM-DD HH:MM</code>\n\n"
+        "Format: <code>YYYY-MM-DD HH:MM</code>\n"
         "Example: <code>2026-12-25 17:00</code>\n\n"
-        "Ye first automatic post ka scheduled time hoga.\n"
-        "Time future mein hona chahiye.",
+        "Time future mein hona chahiye.\n"
+        "Send /cancel to cancel.",
     )
 
 
@@ -1264,8 +1158,8 @@ def redeem_auto_set_interval_callback(call):
     bot.send_message(
         call.message.chat.id,
         "⏱️ <b>SET REPOST INTERVAL</b>\n\n"
-        "Automatic redeem post kitne hours baad replace karni hai?\n\n"
-        "⚠️ Ye code expiry se alag setting hai.",
+        "Automatic redeem post kitne hours baad replace karni hai?\n"
+        "Ye code expiry se alag setting hai.",
         parse_mode="HTML",
         reply_markup=keyboard,
     )
@@ -1289,8 +1183,8 @@ def redeem_interval_preset_callback(call):
             "redeem_auto_interval",
             "✍️ <b>CUSTOM REPOST INTERVAL</b>\n\n"
             "Interval hours mein bhejo.\n"
-            "Examples: <code>3</code>, <code>8</code>, <code>36</code>\n"
-            "Allowed: 1–87600 hours.",
+            "Allowed: 1–87600 hours.\n"
+            "Send /cancel to cancel.",
         )
         return
 
@@ -1313,7 +1207,6 @@ def redeem_interval_preset_callback(call):
         return
 
     bot.answer_callback_query(call.id, f"Interval set: {hours} hours.")
-
     show_auto_settings(call.message.chat.id)
 
 
@@ -1336,7 +1229,7 @@ def redeem_auto_set_reward_callback(call):
         "redeem_auto_reward",
         "🪙 <b>SET REWARD</b>\n\n"
         "Har user ko kitne coins milenge?\n"
-        "Example: <code>10</code>",
+        "Send /cancel to cancel.",
     )
 
 
@@ -1359,7 +1252,7 @@ def redeem_auto_set_max_callback(call):
         "redeem_auto_max",
         "👥 <b>SET MAX USERS</b>\n\n"
         "Maximum kitne users code redeem kar sakte hain?\n"
-        "Example: <code>100</code>",
+        "Send /cancel to cancel.",
     )
 
 
@@ -1382,12 +1275,12 @@ def redeem_auto_set_expiry_callback(call):
         "redeem_auto_expiry",
         "⌛ <b>SET CODE EXPIRY</b>\n\n"
         "Code kitne hours tak valid rahega?\n"
-        "Example: <code>24</code>",
+        "Send /cancel to cancel.",
     )
 
 
 # =========================================================
-# POST MANUAL CODE TO CHANNEL
+# POST MANUAL REDEEM CODE
 # =========================================================
 
 @bot.callback_query_handler(
@@ -1417,6 +1310,14 @@ def redeem_post_manual_callback(call):
         )
         return
 
+    if not code_data.get("is_active"):
+        bot.answer_callback_query(
+            call.id,
+            "Ye code inactive hai.",
+            show_alert=True,
+        )
+        return
+
     channel_id = code_data.get("channel_id") or CHANNEL_ID
 
     message_text = (
@@ -1441,13 +1342,11 @@ def redeem_post_manual_callback(call):
 
         bot.send_message(
             call.message.chat.id,
-            "✅ Manual redeem code posted successfully.\n"
-            "Automatic scheduler is tracking only its own posts.",
+            "✅ Manual redeem code posted successfully.",
         )
 
     except Exception:
         logger.exception("Could not publish manual redeem post")
-
         bot.answer_callback_query(
             call.id,
             "Failed to post. Check bot channel permissions.",
@@ -1492,47 +1391,7 @@ def handle_admin_input(message):
     action = session.get("action")
 
     # -----------------------------------------------------
-    # ADD LINKS
-    # -----------------------------------------------------
-
-    if action == "add_links":
-        links = [
-            line.strip()
-            for line in text.splitlines()
-            if line.strip()
-        ]
-
-        if not links:
-            bot.send_message(
-                message.chat.id,
-                "❌ No links received.",
-            )
-            return
-
-        try:
-            add_links(links, user_id)
-
-            admin_sessions.pop(user_id, None)
-
-            bot.send_message(
-                message.chat.id,
-                f"✅ Submitted {len(links)} link(s).",
-                reply_markup=get_admin_keyboard(),
-            )
-
-        except Exception:
-            logger.exception("Could not add links")
-
-            bot.send_message(
-                message.chat.id,
-                "❌ Could not save links. Database function check karo.",
-            )
-
-        return
-        
-        
-            # -----------------------------------------------------
-    # REMOVE LINKS BY RANGE INPUT
+    # REMOVE LINKS BY RANGE
     # -----------------------------------------------------
 
     if action == "remove_links_range":
@@ -1561,12 +1420,20 @@ def handle_admin_input(message):
             )
             return
 
-        links = get_active_links()
+        try:
+            links = get_active_links()
+        except Exception:
+            logger.exception("Could not load links for range removal")
+            bot.send_message(
+                message.chat.id,
+                "❌ Could not load active links.",
+            )
+            return
 
         if start_position > len(links):
             bot.send_message(
                 message.chat.id,
-                "❌ Starting position active-links list se bahar hai.",
+                f"❌ Sirf {len(links)} active links available hain.",
             )
             return
 
@@ -1579,7 +1446,6 @@ def handle_admin_input(message):
             )
             return
 
-        # Keep the exact database IDs for confirmation.
         selected_ids = [int(link["id"]) for link in selected]
 
         admin_sessions[user_id] = {
@@ -1610,6 +1476,44 @@ def handle_admin_input(message):
             parse_mode="HTML",
             reply_markup=keyboard,
         )
+        return
+
+    # -----------------------------------------------------
+    # ADD LINKS
+    # -----------------------------------------------------
+
+    if action == "add_links":
+        links = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip()
+        ]
+
+        if not links:
+            bot.send_message(
+                message.chat.id,
+                "❌ No links received.",
+            )
+            return
+
+        try:
+            added_ids = add_links(links, user_id)
+
+            admin_sessions.pop(user_id, None)
+
+            bot.send_message(
+                message.chat.id,
+                f"✅ Submitted {len(added_ids)} link(s).",
+                reply_markup=get_admin_keyboard(),
+            )
+
+        except Exception:
+            logger.exception("Could not add links")
+            bot.send_message(
+                message.chat.id,
+                "❌ Could not save links. Database check karo.",
+            )
+
         return
 
     # -----------------------------------------------------
@@ -1664,7 +1568,7 @@ def handle_admin_input(message):
             bot.send_message(
                 message.chat.id,
                 "❌ Invalid format.\n"
-                "Is format mein bhejo: <code>YYYY-MM-DD HH:MM</code>\n"
+                "Format: <code>YYYY-MM-DD HH:MM</code>\n"
                 "Example: <code>2026-12-25 17:00</code>",
                 parse_mode="HTML",
             )
@@ -1686,8 +1590,7 @@ def handle_admin_input(message):
         if not saved:
             bot.send_message(
                 message.chat.id,
-                "❌ Date/time save nahi hui. Database mein "
-                "scheduled_at column aur update support verify karo.",
+                "❌ Date/time save nahi hui. Database settings check karo.",
             )
             return
 
@@ -1699,7 +1602,7 @@ def handle_admin_input(message):
             f"📅 Date: <code>{scheduled_dt.strftime('%Y-%m-%d')}</code>\n"
             f"🕒 Time: <code>{scheduled_dt.strftime('%H:%M')}</code>\n"
             f"🌐 Timezone: <code>{html.escape(str(TIMEZONE))}</code>\n\n"
-            "Auto Redeem abhi OFF hai. Settings check karke ON kar sakte ho.",
+            "Auto Redeem abhi OFF hai.",
             parse_mode="HTML",
         )
 
@@ -1917,7 +1820,6 @@ def handle_admin_input(message):
             code = session["code"]
             reward = session["reward"]
             max_users = session["max_users"]
-
             expires_at = generate_redeem_expiry(expiry_hours)
 
             try:
@@ -1944,6 +1846,7 @@ def handle_admin_input(message):
                 return
 
             keyboard = types.InlineKeyboardMarkup(row_width=1)
+
             keyboard.add(
                 types.InlineKeyboardButton(
                     "📢 Post to Channel",
@@ -2065,6 +1968,7 @@ def handle_admin_input(message):
                 return
 
             keyboard = types.InlineKeyboardMarkup(row_width=1)
+
             keyboard.add(
                 types.InlineKeyboardButton(
                     "📢 Post to Channel",
@@ -2086,16 +1990,16 @@ def handle_admin_input(message):
 
     bot.send_message(
         message.chat.id,
-        "⚠️ Admin action identify nahi hua. /cancel bhejkar dobara try karo.",
+        "⚠️ Admin action identify nahi hua. "
+        "/cancel bhejkar dobara try karo.",
     )
 
 
 # =========================================================
 # BROADCAST & BACKUP
 # =========================================================
-# Do NOT add callback handlers for admin_broadcast or admin_backup
-# here. They are already registered in:
-# handlers.broadcast.start_broadcast
-# handlers.backup.open_backup_menu
+# Broadcast and Backup callback handlers are registered by:
+# handlers.broadcast
+# handlers.backup
 #
-# Importing those modules above registers the real handlers.
+# Do not duplicate those handlers here.
