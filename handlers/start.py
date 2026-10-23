@@ -107,10 +107,6 @@ def main_menu():
         types.KeyboardButton("🎁 Redeem Code")
     )
 
-    keyboard.row(
-        types.KeyboardButton("🎁 Daily Bonus")
-    )
-
     return keyboard
 
 
