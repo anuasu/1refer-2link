@@ -7,18 +7,21 @@ DAILY_BONUS_AMOUNT = 10
 
 def handle_daily_bonus(chat_id, user_id):
     """
-    Claim the daily bonus for a registered user.
+    Process a daily bonus claim for a registered user.
 
-    The database controls the India-time calendar date and prevents
-    duplicate claims, including after bot restarts.
+    The database uses the India-time calendar date to manage eligibility
+    and prevent duplicate claims, including after bot restarts.
     """
     try:
         result = claim_daily_bonus(user_id)
     except Exception as error:
-        print(f"Daily bonus error for user {user_id}: {error}")
+        print(f"Daily Bonus Error for user {user_id}: {error}")
         bot.send_message(
             chat_id,
-            "⚠️ Daily Bonus abhi claim nahi ho paaya. Please thodi der baad try karo."
+            "⚠️ <b>Daily Bonus Temporarily Unavailable</b>\n\n"
+            "Your bonus could not be claimed at this time. "
+            "Please try again shortly.",
+            parse_mode="HTML",
         )
         return
 
@@ -27,13 +30,16 @@ def handle_daily_bonus(chat_id, user_id):
 
         if reason == "already_claimed":
             balance = result.get("balance", 0)
+
             bot.send_message(
                 chat_id,
                 (
                     "🎁 <b>Daily Bonus Already Claimed!</b>\n\n"
-                    "Bhai, aaj ka +10 coins bonus tum pehle hi claim kar chuke ho. 💓\n\n"
-                    f"🪙 <b>Current Balance:</b> {balance} coins\n"
-                    "⏰ Next bonus India time ke mutabik midnight ke baad available hoga."
+                    "You have already claimed today's daily bonus of "
+                    "<b>+10 coins</b>. 💎\n\n"
+                    f"🪙 <b>Current Balance:</b> {balance} coins\n\n"
+                    "⏰ Your next daily bonus will be available after "
+                    "midnight (India Standard Time)."
                 ),
                 parse_mode="HTML",
             )
@@ -42,13 +48,22 @@ def handle_daily_bonus(chat_id, user_id):
         if reason == "user_not_found":
             bot.send_message(
                 chat_id,
-                "❌ Pehle /start karke bot mein register karo, phir Daily Bonus claim kar sakte ho."
+                (
+                    "❌ <b>Registration Required</b>\n\n"
+                    "Please use /start to register your account "
+                    "before claiming the Daily Bonus."
+                ),
+                parse_mode="HTML",
             )
             return
 
         bot.send_message(
             chat_id,
-            "❌ Daily Bonus claim nahi ho paaya. Please dobara try karo."
+            (
+                "❌ <b>Daily Bonus Claim Failed</b>\n\n"
+                "We could not process your request. Please try again."
+            ),
+            parse_mode="HTML",
         )
         return
 
@@ -59,9 +74,10 @@ def handle_daily_bonus(chat_id, user_id):
         chat_id,
         (
             "🎉 <b>Daily Bonus Claimed Successfully!</b>\n\n"
-            f"🎁 <b>Reward:</b> +{reward} coins\n"
+            f"🎁 <b>Reward Received:</b> +{reward} coins\n"
             f"🪙 <b>Current Balance:</b> {balance} coins\n\n"
-            "💓 Kal India time ke mutabik midnight ke baad phir claim karna!"
+            "💎 Return tomorrow after midnight (India Standard Time) "
+            "to claim your next daily reward!"
         ),
         parse_mode="HTML",
     )
@@ -91,5 +107,4 @@ def daily_bonus_button(message):
     handle_daily_bonus(
         chat_id=message.chat.id,
         user_id=message.from_user.id,
-  )
-  
+    )
