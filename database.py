@@ -1,11 +1,13 @@
 import sqlite3
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from config import (
     DATABASE_FILE,
     WELCOME_BONUS,
     REFERRAL_REWARD,
     LINK_UNLOCK_COST,
+    TIMEZONE,
 )
 
 
@@ -80,6 +82,15 @@ def init_db():
                 transaction_type TEXT NOT NULL,
                 description TEXT DEFAULT '',
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_bonus_claims (
+                user_id INTEGER NOT NULL,
+                claim_date TEXT NOT NULL,
+                coins_awarded INTEGER NOT NULL DEFAULT 10,
+                claimed_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, claim_date),
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
 
             CREATE TABLE IF NOT EXISTS redeem_codes (
@@ -1183,6 +1194,99 @@ def get_user_unlocked_links(user_id):
         """, (user_id,)).fetchall()
 
         return [dict(row) for row in rows]
+
+
+# =========================================================
+# DAILY BONUS
+# =========================================================
+
+def claim_daily_bonus(user_id):
+    """Give a user 10 coins once per calendar day in the configured timezone.
+
+    The claim record is stored in SQLite, so it survives bot restarts.
+    Existing balances, referrals, links, and transaction history are preserved.
+    """
+    reward = 10
+    now = datetime.now(ZoneInfo(TIMEZONE))
+    today = now.date().isoformat()
+    claimed_at = now.isoformat(timespec="seconds")
+
+    with get_connection() as conn:
+        # Serialize simultaneous claims and avoid duplicate rewards.
+        conn.execute("BEGIN IMMEDIATE")
+
+        user = conn.execute(
+            "SELECT user_id FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+
+        if not user:
+            return {
+                "success": False,
+                "reason": "user_not_found",
+            }
+
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO daily_bonus_claims (
+                user_id, claim_date, coins_awarded, claimed_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, today, reward, claimed_at),
+        )
+
+        if cursor.rowcount != 1:
+            balance_row = conn.execute(
+                "SELECT coins_balance FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return {
+                "success": False,
+                "reason": "already_claimed",
+                "balance": balance_row["coins_balance"],
+                "claim_date": today,
+            }
+
+        conn.execute(
+            """
+            UPDATE users
+            SET coins_balance = coins_balance + ?,
+                total_coins_earned = total_coins_earned + ?,
+                updated_at = ?
+            WHERE user_id = ?
+            """,
+            (reward, reward, claimed_at, user_id),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO coin_transactions (
+                user_id, amount, transaction_type, description, created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                reward,
+                "daily_bonus",
+                "Daily bonus reward",
+                claimed_at,
+            ),
+        )
+
+        balance_row = conn.execute(
+            "SELECT coins_balance FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+
+        return {
+            "success": True,
+            "reward": reward,
+            "balance": balance_row["coins_balance"],
+            "claim_date": today,
+        }
+
 
 
 # =========================================================
