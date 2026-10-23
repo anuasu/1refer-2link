@@ -32,6 +32,7 @@ import handlers.broadcast
 import handlers.backup
 import handlers.admin
 import handlers.redeem
+import handlers.daily_bonus
 
 
 # =========================================================
