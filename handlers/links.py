@@ -1,7 +1,7 @@
 from telebot import types
 from bot import bot
 from config import GROUP_ID, GROUP_INVITE_LINK, CHANNEL_ID, CHANNEL_INVITE_LINK, LINK_UNLOCK_COST
-from database import get_user, complete_verification, get_active_links, has_unlocked_link, unlock_link
+from database import get_user, complete_verification, get_active_links, has_unlocked_link, unlock_link, get_connection
 
 
 def check_membership(user_id):
@@ -23,12 +23,26 @@ def join_keyboard():
 
 
 def show_links(chat_id, user_id, notice=None):
+    # Fetch links and this user's unlock history in bulk, rather than
+    # opening a separate SQLite connection for every link.
     links = get_active_links()
+
+    if not links:
+        text = "📭 No links are available at the moment."
+        if notice:
+            text = notice + "\n\n" + text
+        bot.send_message(chat_id, text)
+        return
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT link_id FROM unlocked_links WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+    unlocked_ids = {int(row["link_id"]) for row in rows}
+
+    unlocked_count = sum(1 for link in links if int(link["id"]) in unlocked_ids)
     total_links = len(links)
-    unlocked_count = sum(
-        1 for link in links
-        if has_unlocked_link(user_id, int(link["id"]))
-    )
     remaining_count = total_links - unlocked_count
 
     text = (
@@ -47,9 +61,8 @@ def show_links(chat_id, user_id, notice=None):
 
     next_link = None
     next_number = None
-
     for number, link in enumerate(links, start=1):
-        if not has_unlocked_link(user_id, int(link["id"])):
+        if int(link["id"]) not in unlocked_ids:
             next_link = link
             next_number = number
             break
@@ -59,18 +72,14 @@ def show_links(chat_id, user_id, notice=None):
         f"💰 Unlock Cost: <b>{LINK_UNLOCK_COST} Coins</b>\n\n"
         "Tap the button below to unlock the next link."
     )
-
     if notice:
         text = notice + "\n\n" + text
 
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(
-        types.InlineKeyboardButton(
-            f"🔓 Open Link #{next_number}",
-            callback_data=f"unlock_{next_link['id']}"
-        )
-    )
-
+    keyboard.add(types.InlineKeyboardButton(
+        f"🔓 Open Link #{next_number}",
+        callback_data=f"unlock_{next_link['id']}"
+    ))
     bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
 
 
