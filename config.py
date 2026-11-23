@@ -1,6 +1,6 @@
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8849385034:AAEFecojAz5sd6yKRdr07IeHV9K01f3el_Q")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "9112342402:AAEpV1mEXKc11At-v-nySTM8SFiyMwGHGjI")
 
 ADMIN_IDS = [
     8568170829, 
