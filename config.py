@@ -11,7 +11,7 @@ GROUP_ID = -1004394241540
 GROUP_INVITE_LINK = "https://t.me/GcSecrect"
 
 CHANNEL_ID = -1004346974389
-CHANNEL_INVITE_LINK = "https://t.me/secrectsworld"
+CHANNEL_INVITE_LINK = "https://t.me/MafiaSecretWorld"
 
 BOT_USERNAME = "UndermafiaBot"
 
